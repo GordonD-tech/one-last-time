@@ -119,11 +119,23 @@ plot(holdout$Stress.Level ~ holdout$Quality.of.Sleep)
 library(tidyverse) #includes dplyr and ggplot2
 library(tseries) #for the J-B test
 library(ggthemes) #for pre-loaded themes for ggplot2
+
 ##ADD A (LINEAR) SMOOTHER  AND SOME FORMATTING TO THE SCATTER
-ggplot(, aes(x = Quality.of.Sleep, y = Stress.Level)) + 
-  geom_point() +
-  geom_smooth(method ='lm') +
-  theme_tufte() +
-  ggtitle('How Quality of Sleep Affects Stress Levels') +
-  xlab('Quality of Sleep') +
-  ylab('Stress Level')
+plot(train$Stress.Level, train$Quality.of.Sleep, type = "l", col = "blue", ylim = range(c(train$Quality.of.Sleep, holdout$Quality.of.Sleep)), 
+     xlab = "Stress Levels", ylab = "Quality of Sleep", main = "How Stress Levels Affects Quality of Sleep")
+lines(holdout$Stress.Level, holdout$Quality.of.Sleep, col = "red", lty = 2)
+legend("topright", legend = c("Train", "Holdout"), col = c("blue", "red"), lty = c(1, 2))
+
+model <- lm(Quality.of.Sleep ~ Stress.Level, data = holdout)
+
+# Combine for consistent x-axis scaling
+x_min <- 0
+x_max <- 12
+y_min <- 0
+y_max <- 12
+
+plot(train$Stress.Level, train$Quality.of.Sleep, type = "p", col = "blue", 
+     xlab = "Stress Level", ylab = "Quality of Sleep", 
+     main = "How Stress Levels Affects Quality of Sleep", 
+     ylim = range(c(train$Quality.of.Sleep, holdout$Quality.of.Sleep)))
+abline(a = y_max, b = -(y_max - y_min) / (x_max - x_min), col = "red", lwd = 2)
