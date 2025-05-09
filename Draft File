@@ -159,3 +159,84 @@ rmse_val <- sqrt(mean((val$Stress.Level - pred_val)^2))
 
 cat("In-sample RMSE:", rmse_train, "\n")
 cat("Out-of-sample RMSE:", rmse_val, "\n")
+
+# Ridge Regularization for multivariable linear model, I could inly figure out how
+# to get it to run with numeric variables existing in the table (age and daily steps)
+# Step 1, build design matrix
+# Define model formula including Daily.Steps
+fmla <- ~ Sleep.Duration + Age + Daily.Steps
+X <- model.matrix(fmla, data = train)
+y <- train$Stress.Level
+
+X_val <- model.matrix(fmla, data = val)
+y_val <- val$Stress.Level
+
+# add lamda = 2
+lambda <- 2
+ridge_betas <- solve(t(X) %*% X + lambda * diag(ncol(X))) %*% t(X) %*% y
+
+# predict on validation set
+pred_train <- X %*% ridge_betas
+pred_val <- X_val %*% ridge_betas
+
+rmse_train <- sqrt(mean((y - pred_train)^2))
+rmse_val <- sqrt(mean((y_val - pred_val)^2))
+
+cat("Train RMSE (ridge, λ=2):", rmse_train, "\n")
+cat("Validation RMSE (ridge, λ=2):", rmse_val, "\n")
+
+
+# for creating formula to test multiple lamdas
+# Step 1: Define formula and design matrices (numeric variables only)
+fmla <- ~ Sleep.Duration + Age + Daily.Steps
+
+X <- model.matrix(fmla, data = train)
+y <- train$Stress.Level
+
+X_val <- model.matrix(fmla, data = val)
+y_val <- val$Stress.Level
+
+# Lambda grid from 0.001 to 2 (avoid 0 to prevent singularity)
+lambda_seq <- seq(0.001, 2, 0.001)
+
+# Initialize storage
+BETA_RIDGE <- matrix(NA, nrow = ncol(X), ncol = length(lambda_seq))
+E_OUT <- numeric(length(lambda_seq))
+E_IN <- numeric(length(lambda_seq))
+
+# Ridge loop
+for (i in seq_along(lambda_seq)) {
+  lambda <- lambda_seq[i]
+  
+  # Compute ridge coefficients
+  BETA_RIDGE[, i] <- solve(t(X) %*% X + lambda * diag(ncol(X))) %*% t(X) %*% y
+  
+  # Predictions
+  pred_train <- X %*% BETA_RIDGE[, i]
+  pred_val <- X_val %*% BETA_RIDGE[, i]
+  
+  # RMSEs
+  E_IN[i] <- sqrt(mean((y - pred_train)^2))
+  E_OUT[i] <- sqrt(mean((y_val - pred_val)^2))
+}
+library(ggplot2)
+
+df_ridge <- data.frame(lambda = lambda_seq, RMSE_Train = E_IN, RMSE_Val = E_OUT)
+
+ggplot(df_ridge, aes(x = lambda)) +
+  geom_line(aes(y = RMSE_Train), color = "blue", size = 1) +
+  geom_line(aes(y = RMSE_Val), color = "red", size = 1) +
+  geom_vline(xintercept = lambda_seq[which.min(E_OUT)], linetype = "dashed", color = "darkgreen") +
+  labs(title = "Ridge Regression: RMSE vs Lambda",
+       y = "RMSE",
+       x = "Lambda",
+       subtitle = "Blue = Train, Red = Validation") +
+  theme_minimal()
+# output best lamda
+best_lambda <- lambda_seq[which.min(E_OUT)]
+best_rmse <- min(E_OUT)
+
+cat("Best lambda:", best_lambda, "\n")
+cat("Validation RMSE at best lambda:", best_rmse, "\n")
+# Best lambda: 0.148 
+# Validation RMSE at best lambda: 0.9048228 
