@@ -177,3 +177,25 @@ final_model <- glm(Stress.Level ~ Quality.of.Sleep, data = train, family = quasi
 test_rmse <- sqrt(mean(residuals(glm(Stress.Level ~ Quality.of.Sleep, data = test, family = quasipoisson()))^2))
 
 cat("Uncontaminated test RMSE for final model (Poisson Linear):", test_rmse, "\n")
+
+# Creates a linear model fit to training data with 
+# dummy variables "Gender, Occupation, BMI Catagory" 
+
+model_lm <- lm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+               data = train)
+
+summary(model_lm)
+
+# Predict on training and validation data sets
+pred_train <- predict(model_lm, newdata = train)
+pred_val <- predict(model_lm, newdata = val)
+
+# In-sample RMSE (training set)
+rmse_train <- sqrt(mean((train$Stress.Level - pred_train)^2))
+
+# Out-of-sample RMSE (validation set)
+rmse_val <- sqrt(mean((val$Stress.Level - pred_val)^2))
+
+cat("In-sample RMSE:", rmse_train, "\n")
+cat("Out-of-sample RMSE:", rmse_val, "\n")
+
