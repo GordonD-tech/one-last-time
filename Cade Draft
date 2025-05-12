@@ -160,20 +160,52 @@ print(summary_5c)
 cat("Best model based on out-of-sample RMSE:", 
     summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
 
-#SPECIFYING THE REGRESSION TREE MODEL
-reg_spec <- decision_tree(min_n = 20 , #minimum number of observations for split
-                          tree_depth = 30, #max tree depth
-                          cost_complexity = 0.01)  %>% #regularization parameter
-  set_engine("rpart") %>%
-  set_mode("regression")
-print(reg_spec)
+library(tibble)  # ensure it's loaded
 
-#ESTIMATING THE MODEL (CAN BE DONE IN ONE STEP ABOVE WITH EXTRA %>%)
-reg_fmla <- Stress.Level ~ .
-reg_tree <- reg_spec %>%
-  fit(formula = reg_fmla, data = train)
-print(reg_tree)
+train_preds <- predict(reg_tree, new_data = train) %>%
+  bind_cols(as_tibble(train) %>% dplyr::select(Stress.Level))
 
-#VISUALIZING THE REGRESSION TREE
-reg_tree$fit %>%
-  rpart.plot(type = 4, roundint = FALSE)
+
+# Calculate in-sample metrics
+train_metrics <- train_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred)
+
+print("In-Sample Performance:")
+print(train_metrics)
+
+# Loop through all columns in test that are also in train
+for (col in names(test)) {
+  if (is.factor(train[[col]])) {
+    test[[col]] <- factor(test[[col]], levels = levels(train[[col]]))
+  }
+}
+
+test$Occupation <- factor(test$Occupation, levels = levels(train$Occupation))
+
+levels(train$Occupation)
+levels(test$Occupation)
+
+for (col in names(train)) {
+  if (is.factor(train[[col]])) {
+    test[[col]] <- factor(test[[col]], levels = levels(train[[col]]))
+  }
+}
+
+# Predict on test data
+test_preds <- predict(reg_tree, new_data = test) %>%
+  bind_cols(data.frame(Stress.Level = test$Stress.Level))
+
+# Calculate out-of-sample metrics
+test_metrics <- test_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred)
+
+print("Out-of-Sample Performance:")
+print(test_metrics)
+
+# Plot the tree
+rpart.plot(reg_tree$fit,
+           type = 4,        # Fancy split labels
+           extra = 101,     # Show fitted values and % of observations
+           fallen.leaves = TRUE,
+           roundint = FALSE,
+           main = "Regression Tree for Stress Level")
