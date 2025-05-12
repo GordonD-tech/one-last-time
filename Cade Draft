@@ -223,11 +223,19 @@ cat("Best model based on out-of-sample RMSE:",
 
 library(tibble)  # ensure it's loaded
 
+#SPECIFYING THE REGRESSION TREE MODEL
+reg_spec <- decision_tree(min_n = 20 , #minimum number of observations for split
+                          tree_depth = 30, #max tree depth
+                          cost_complexity = 0.01)  %>% #regularization parameter
+  set_engine("rpart") %>%
+  set_mode("regression")
+print(reg_spec)
+
+#ESTIMATING THE MODEL (CAN BE DONE IN ONE STEP ABOVE WITH EXTRA %>%)
 reg_fmla <- Stress.Level ~ .
 reg_tree <- reg_spec %>%
   fit(formula = reg_fmla, data = train)
 print(reg_tree)
-
 
 # Calculate in-sample metrics
 train_metrics <- train_preds %>%
