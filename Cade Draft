@@ -239,7 +239,7 @@ print(reg_tree)
 
 # Predict on training data
 train_preds <- predict(reg_tree, new_data = train) %>%
-  bind_cols(train %>% select(Stress.Level))  # Add actual values
+  bind_cols(as_tibble(train) %>% dplyr::select(Stress.Level))
 
 # Calculate in-sample metrics
 train_metrics <- train_preds %>%
