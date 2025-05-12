@@ -223,6 +223,7 @@ cat("Best model based on out-of-sample RMSE:",
 
 library(tibble)  # ensure it's loaded
 
+reg_fmla <- Stress.Level ~ .
 reg_tree <- reg_spec %>%
   fit(formula = reg_fmla, data = train)
 print(reg_tree)
