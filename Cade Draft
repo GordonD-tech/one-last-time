@@ -221,11 +221,11 @@ print(summary_5c)
 cat("Best model based on out-of-sample RMSE:", 
     summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
 
-#Creating Decision Tree
 library(tibble)  # ensure it's loaded
-install.packages("tibble")
-train_preds <- predict(reg_tree, new_data = train) %>%
-  bind_cols(as_tibble(train) %>% dplyr::select(Stress.Level))
+
+reg_tree <- reg_spec %>%
+  fit(formula = reg_fmla, data = train)
+print(reg_tree)
 
 
 # Calculate in-sample metrics
@@ -234,6 +234,7 @@ train_metrics <- train_preds %>%
 
 print("In-Sample Performance:")
 print(train_metrics)
+
 
 # Loop through all columns in test that are also in train
 for (col in names(test)) {
