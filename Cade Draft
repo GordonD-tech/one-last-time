@@ -9,9 +9,6 @@ library(tseries)
 library(ggthemes)
 library(ggplot2)
 library(glmnet)  # For Elastic Net
-library(shape)
-install.packages ("glmnet")
-library(rpart.plot)
 
 # Load dataset
 df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
@@ -19,6 +16,14 @@ df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/ref
 # Check correlation
 cor_matrix <- cor(df[, sapply(df, is.numeric)], use = "complete.obs")
 print(cor_matrix["Stress.Level", ])
+
+# Load SVM library
+library(e1071)
+
+# Re-factor entire dataset first to capture all levels
+df$Gender <- as.factor(df$Gender)
+df$Occupation <- as.factor(df$Occupation)
+df$BMI.Category <- as.factor(df$BMI.Category)
 
 # Partition data
 set.seed(123)
@@ -87,7 +92,7 @@ rmse_val <- sqrt(mean((val$Stress.Level - pred_val)^2))
 cat("Multivariate LM - In-sample RMSE:", round(rmse_train, 4), "\n")
 cat("Multivariate LM - Out-of-sample RMSE:", round(rmse_val, 4), "\n")
 
-# Multivariate Nonlinear Model
+# Multivariate Nonlinear Model (elastic net)
 model_nl <- lm(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = train)
 pred_nl_train <- predict(model_nl, newdata = train)
 pred_nl_val <- predict(model_nl, newdata = val)
@@ -160,8 +165,65 @@ print(summary_5c)
 cat("Best model based on out-of-sample RMSE:", 
     summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
 
-library(tibble)  # ensure it's loaded
+# Define parameter grid to TUNE SVM model
+tune_result <- tune(
+  svm,
+  Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+  data = train,
+  ranges = list(
+    cost = c(0.1, 1, 10, 100),
+    gamma = c(0.01, 0.1, 1),
+    epsilon = c(0.01, 0.1, 0.5)
+  )
+)
 
+# Best model
+best_svm <- tune_result$best.model
+
+# Predict on validation set
+svm_val_preds <- predict(best_svm, newdata = val)
+rmse_svm_val <- sqrt(mean((val$Stress.Level - svm_val_preds)^2))
+
+cat("Tuned SVM - Out-of-sample RMSE:", round(rmse_svm_val, 4), "\n")
+
+# Assign distinct names to tuned SVM RMSEs (if not done yet)
+rmse_svm_train_tuned <- sqrt(mean((train$Stress.Level - predict(best_svm, newdata = train))^2))
+rmse_svm_val_tuned <- sqrt(mean((val$Stress.Level - predict(best_svm, newdata = val))^2))
+
+# Update table with correct values
+model_5c_names <- c("Multivariate Linear", 
+                    "Multivariate Nonlinear", 
+                    "Elastic Net", 
+                    "SVM", 
+                    "Tuned SVM")
+
+in_rmse_5c <- c(rmse_train, 
+                rmse_nl_train, 
+                in_rmse_enet, 
+                rmse_svm_train,        # original SVM
+                rmse_svm_train_tuned)  # tuned SVM
+
+out_rmse_5c <- c(rmse_val, 
+                 rmse_nl_val, 
+                 test_rmse_enet, 
+                 rmse_svm_val,         # original SVM
+                 rmse_svm_val_tuned)   # tuned SVM
+
+# Rebuild and print table
+summary_5c <- data.frame(
+  Model = model_5c_names,
+  In_Sample_RMSE = round(in_rmse_5c, 4),
+  Out_of_Sample_RMSE = round(out_rmse_5c, 4)
+)
+
+print(summary_5c)
+
+cat("Best model based on out-of-sample RMSE:", 
+    summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
+
+#Creating Decision Tree
+library(tibble)  # ensure it's loaded
+install.packages("tibble")
 train_preds <- predict(reg_tree, new_data = train) %>%
   bind_cols(as_tibble(train) %>% dplyr::select(Stress.Level))
 
