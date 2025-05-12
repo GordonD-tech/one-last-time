@@ -9,6 +9,11 @@ library(tseries)
 library(ggthemes)
 library(ggplot2)
 library(glmnet)  # For Elastic Net
+library(baguette) #FOR BAGGED TREES
+library(ranger) #FOR RANDOM FORESTS
+library(randomForest) #ALT RANDOM FOREST PACKAGE
+library(xgboost) #FOR GRADIENT BOOSTING
+library(vip) #FOR VARIABLE IMPORTANCE
 
 # Load dataset
 df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
