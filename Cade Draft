@@ -267,6 +267,9 @@ for (col in names(train)) {
   }
 }
 
+train$Occupation <- as.factor(train$Occupation)
+test$Occupation <- as.factor(test$Occupation)
+
 # Predict on test data
 test_preds <- predict(reg_tree, new_data = test) %>%
   bind_cols(data.frame(Stress.Level = test$Stress.Level))
@@ -277,6 +280,9 @@ test_metrics <- test_preds %>%
 
 print("Out-of-Sample Performance:")
 print(test_metrics)
+
+install.packages("rpart.plot")  # Run only once if not already installed
+library(rpart.plot)
 
 # Plot the tree
 rpart.plot(reg_tree$fit,
