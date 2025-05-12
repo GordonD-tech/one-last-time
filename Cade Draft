@@ -270,4 +270,5 @@ rpart.plot(reg_tree$fit,
            extra = 101,     # Show fitted values and % of observations
            fallen.leaves = TRUE,
            roundint = FALSE,
-           main = "Regression Tree for Stress Level")
+           main = "Regression Tree for Stress Level",
+           cex = .7)  # Bigger text
