@@ -1,141 +1,289 @@
-df<-read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
-#LOADING THE LIBRARIES
-library(tidymodels) #INCLUDES parsnip PACKAGE FOR decision_tree()
-library(caret) #FOR confusionMatrix()
-
-view(df)
-
-
-##PARTITIONING THE DATA##
-set.seed(123)
-split1<-initial_split(df, prop=.7, strata=Stress.Level)
-train<-training(split1)
-holdout<-testing(split1)
-
-set.seed(123)
-split2<-initial_split(holdout, prop=.5, strata=Stress.Level)
-val<- training(split2)
-test<-testing(split2)
-
-training_rows <- runif(dim(df)[1])>.3 #RANDOM VARIABLE THAT IS TRUE 70% OF TIME
-training <- df[training_rows,] #PULL TRAINING ROWS
-holdout <-df[!training_rows,] #PULL NON TRAINING ROWS
-
-library(sm) #loads library for the next function to work
-##BUILD A UNIVARIATE REGRESSION MODEL TO LOOK AT THE EFFECT OF PROMO ON SALES##
-M2<-lm(Stress.Level~Quality.of.Sleep, train)  #builds the model: Sales = B_0+B_1(Promo)+e
-summary(M2)  #returns summary output from the model M2
-M3<-lm(Stress.Level~Quality.of.Sleep, val)  #builds the model: Sales = B_0+B_1(Promo)+e
-summary(M3)
-library(datasets)
-M4<-lm(Stress.Level~log(Quality.of.Sleep), df)  ##level-log model: y=B0+B1*ln(x)+u
-summary(M4)
-M5<-lm(Stress.Level~log(Quality.of.Sleep), train)  
-M6<-lm(Stress.Level~log(Quality.of.Sleep), val)
+# Load libraries
+library(tidymodels)
+library(caret)
+library(MASS)
+library(lmridge)
+library(Metrics)
 library(tidyverse)
+library(tseries)
+library(ggthemes)
+library(ggplot2)
+library(glmnet)  # For Elastic Net
+library(shape)
+install.packages ("glmnet")
+library(rpart.plot)
 
-#STEP 1: FORM THE INPUT MATRIX X:
+# Load dataset
+df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
 
-#STEP 1.1: MAKE A COLUMN OF ONES TO INCLUDE AS REGRESSORS FOR INTERCEPT
-col_of_ones <- rep(1, dim(train)[1])
+# Check correlation
+cor_matrix <- cor(df[, sapply(df, is.numeric)], use = "complete.obs")
+print(cor_matrix["Stress.Level", ])
 
-#STEP 1.2: BIND COLUMN OF ONES WITH OTHER INPUT DATA COLUMNS
-#AND COERCE TO MATRIX OBJECT
-X <- as.matrix(cbind(col_of_ones, train[,-c(1,2,4,9,10,13)]))
-                     
-#STEP 2: FORM THE OUTPUT VECTOR y
-y <- train[,8]
-                     
-#STEP 3: COMPUTE THE PSEUDOINVERSE MATRIX
-X_pseudo <- solve(t(X)%*%X)%*%t(X)
-                     
-#STEP 4: MULTIPLY THE PSEUDOINVERSE MATRIX BY THE OUTPUT VECTOR
-Betas <- X_pseudo%*%y
-                     
-#CREATE INPUT MATRIX FOR HOLDOUT PARTITION
-X_holdout <- as.matrix(cbind(col_of_ones[1:dim(holdout)[1]], holdout[,-c(1,2,4,9,10,13)]))
-                     
-PRED_OUT <- X_holdout%*%Betas
-                     
-y_holdout <- df[!training_rows,8]
-#SET UP GRID OF REGULARIZATION PARAMETER (LAMBDA) VALUES
-lambda <- seq(0, 2,.001)
-#INITIALIZE EMPTY MATRIX TO STORE ESTIMATED MODEL COEFFICIENTS FOR EACH LAMBDA
-BETA_RIDGE <- matrix(NA, nrow = dim(t(X)%*%X) [1], ncol = length(lambda))
-#INITIALIZE EMPTY MATRICES FOR STORING PREDICTION AND ERRORS
-PRED_IN <- matrix(NA, nrow = dim(train) [1], ncol = length(lambda))
-PRED_OUT <- matrix(NA, nrow = dim(holdout) [1], ncol = length (lambda))
-E_IN <- matrix(NA, nrow = 1, ncol=length(lambda))
-E_OUT <- matrix(NA, nrow = 1, ncol = length(lambda))
-                     
-for (i in 1: length(lambda)){
-#COMPUTE PSEUDOINVERSE SOLUTION
-BETA_RIDGE[,i] <- solve(t(X)%*%X+lambda[i]*diag(dim(t(X)%*%X)[1]))%*%t(X)%*%y
-                       
-#COMPUTE PREDICTIONS IN AND OUT-OF-SAMPLE
-PRED_IN[,i] <- X%*%BETA_RIDGE[,i]
-PRED_OUT[,i] <- X_holdout%*%BETA_RIDGE[,i]
-                       
-#COMPUTE PREDICTION ERRORS (MSE) IN AND OUT-OF-SAMPLE
-E_IN[i] <- sqrt(mean((y-PRED_IN[,i])^2))
-E_OUT[i] <- sqrt(mean((y_holdout-PRED_OUT[,i])^2))
+# Partition data
+set.seed(123)
+split1 <- initial_split(df, prop = 0.7, strata = Stress.Level)
+train <- training(split1)
+holdout <- testing(split1)
+split2 <- initial_split(holdout, prop = 0.5, strata = Stress.Level)
+val <- training(split2)
+test <- testing(split2)
+
+# Linear and log-linear models
+M1 <- lm(Stress.Level ~ Quality.of.Sleep, train)
+M2 <- lm(Stress.Level ~ log(Quality.of.Sleep), train)
+M3 <- lm(Stress.Level ~ Quality.of.Sleep, val)
+M4 <- lm(Stress.Level ~ log(Quality.of.Sleep), val)
+
+# Quasipoisson models
+M1_qpois <- glm(Stress.Level ~ Quality.of.Sleep, data = train, family = quasipoisson())
+M2_qpois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = train, family = quasipoisson())
+M3_qpois <- glm(Stress.Level ~ Quality.of.Sleep, data = val, family = quasipoisson())
+M4_qpois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = val, family = quasipoisson())
+
+# Overlay fits
+ggplot(train, aes(x = Quality.of.Sleep, y = Stress.Level)) +
+  geom_point(color = "black") +
+  stat_smooth(method = "lm", se = FALSE, aes(color = "Linear")) +
+  stat_smooth(method = "lm", formula = y ~ log(x), se = FALSE, aes(color = "Log")) +
+  geom_line(aes(y = predict(M1_qpois, type = "response"), color = "Poisson Linear")) +
+  geom_line(aes(y = predict(M2_qpois, type = "response"), color = "Poisson Log")) +
+  labs(title = "Model Fits on Training Set", x = "Quality of Sleep", y = "Stress Level") +
+  scale_color_manual(values = c("Linear" = "blue", "Log" = "green", "Poisson Linear" = "purple", "Poisson Log" = "orange")) +
+  theme_minimal()
+
+# RMSEs
+rmse_M1 <- sqrt(mean(residuals(M1)^2))
+rmse_M2 <- sqrt(mean(residuals(M2)^2))
+rmse_M1_qpois <- sqrt(mean(residuals(M1_qpois)^2))
+rmse_M2_qpois <- sqrt(mean(residuals(M2_qpois)^2))
+rmse_M3_qpois <- sqrt(mean(residuals(M3_qpois)^2))
+rmse_M4_qpois <- sqrt(mean(residuals(M4_qpois)^2))
+rmse_M3 <- sqrt(mean((val$Stress.Level - predict(M3))^2))
+rmse_M4 <- sqrt(mean((val$Stress.Level - predict(M4))^2))
+
+model_names <- c("Linear", "Log-Linear", "Poisson (Linear)", "Poisson (Log)")
+in_sample_rmse <- c(rmse_M1, rmse_M2, rmse_M1_qpois, rmse_M2_qpois)
+out_sample_rmse <- c(rmse_M3, rmse_M4, rmse_M3_qpois, rmse_M4_qpois)
+results_table <- data.frame(Model = model_names,
+                            In_Sample_RMSE = round(in_sample_rmse, 4),
+                            Out_of_Sample_RMSE = round(out_sample_rmse, 4))
+print(results_table)
+
+cat("Best model based on out-of-sample RMSE is:", 
+    results_table$Model[which.min(results_table$Out_of_Sample_RMSE)], "\n")
+
+# Final model test RMSE on test set
+final_model <- glm(Stress.Level ~ Quality.of.Sleep, data = train, family = quasipoisson())
+test_rmse <- sqrt(mean((test$Stress.Level - predict(final_model, newdata = test))^2))
+cat("Test RMSE for final model (Poisson Linear):", round(test_rmse, 4), "\n")
+
+# Multivariate Linear Model
+model_lm <- lm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train)
+pred_train <- predict(model_lm, newdata = train)
+pred_val <- predict(model_lm, newdata = val)
+rmse_train <- sqrt(mean((train$Stress.Level - pred_train)^2))
+rmse_val <- sqrt(mean((val$Stress.Level - pred_val)^2))
+cat("Multivariate LM - In-sample RMSE:", round(rmse_train, 4), "\n")
+cat("Multivariate LM - Out-of-sample RMSE:", round(rmse_val, 4), "\n")
+
+# Multivariate Nonlinear Model
+model_nl <- lm(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = train)
+pred_nl_train <- predict(model_nl, newdata = train)
+pred_nl_val <- predict(model_nl, newdata = val)
+rmse_nl_train <- sqrt(mean((train$Stress.Level - pred_nl_train)^2))
+rmse_nl_val <- sqrt(mean((val$Stress.Level - pred_nl_val)^2))
+cat("Multivariate Nonlinear - In-sample RMSE:", round(rmse_nl_train, 4), "\n")
+cat("Multivariate Nonlinear - Out-of-sample RMSE:", round(rmse_nl_val, 4), "\n")
+
+# Elastic Net Regularization
+combined <- rbind(train, val, test)
+X_all <- model.matrix(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = combined)[, -1]
+
+X_trainval <- X_all[1:(nrow(train) + nrow(val)), ]
+y_trainval <- combined$Stress.Level[1:(nrow(train) + nrow(val))]
+X_test <- X_all[(nrow(train) + nrow(val) + 1):nrow(combined), ]
+y_test <- test$Stress.Level
+
+cv_model <- cv.glmnet(X_trainval, y_trainval, alpha = 0.5)
+best_lambda_enet <- cv_model$lambda.min
+cat("Best lambda (Elastic Net):", best_lambda_enet, "\n")
+
+plot(cv_model)
+
+pred_enet_train <- predict(cv_model, s = best_lambda_enet, newx = X_trainval)
+in_rmse_enet <- sqrt(mean((y_trainval - pred_enet_train)^2))
+
+pred_test_enet <- predict(cv_model, s = best_lambda_enet, newx = X_test)
+test_rmse_enet <- sqrt(mean((y_test - pred_test_enet)^2))
+cat("Elastic Net - Test RMSE:", round(test_rmse_enet, 4), "\n")
+
+# 5c Model RMSE Summary Table
+model_5c_names <- c("Multivariate Linear", "Multivariate Nonlinear", "Elastic Net")
+in_rmse_5c <- c(rmse_train, rmse_nl_train, in_rmse_enet)
+out_rmse_5c <- c(rmse_val, rmse_nl_val, test_rmse_enet)
+summary_5c <- data.frame(Model = model_5c_names,
+                         In_Sample_RMSE = round(in_rmse_5c, 4),
+                         Out_of_Sample_RMSE = round(out_rmse_5c, 4))
+print(summary_5c)
+
+# Load SVM library
+library(e1071)
+
+# Fit SVM model (using radial kernel by default)
+svm_model <- svm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+                 data = train,
+                 kernel = "radial",
+                 cost = 1,   # C parameter
+                 epsilon = 0.1)
+
+# Predict on training and validation sets
+pred_svm_train <- predict(svm_model, newdata = train)
+pred_svm_val <- predict(svm_model, newdata = val)
+
+# Compute RMSE
+rmse_svm_train <- sqrt(mean((train$Stress.Level - pred_svm_train)^2))
+rmse_svm_val <- sqrt(mean((val$Stress.Level - pred_svm_val)^2))
+
+# Output
+cat("SVM - In-sample RMSE:", round(rmse_svm_train, 4), "\n")
+cat("SVM - Out-of-sample RMSE:", round(rmse_svm_val, 4), "\n")
+
+summary_5c <- data.frame(
+  Model = c("Multivariate Linear", "Multivariate Nonlinear", "Elastic Net", "SVM"),
+  In_Sample_RMSE = round(c(rmse_train, rmse_nl_train, in_rmse_enet, rmse_svm_train), 4),
+  Out_of_Sample_RMSE = round(c(rmse_val, rmse_nl_val, test_rmse_enet, rmse_svm_val), 4)
+)
+
+print(summary_5c)
+
+cat("Best model based on out-of-sample RMSE:", 
+    summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
+
+# Define parameter grid to TUNE SVM model
+tune_result <- tune(
+  svm,
+  Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+  data = train,
+  ranges = list(
+    cost = c(0.1, 1, 10, 100),
+    gamma = c(0.01, 0.1, 1),
+    epsilon = c(0.01, 0.1, 0.5)
+  )
+)
+
+# Best model
+best_svm <- tune_result$best.model
+
+# Predict on validation set
+svm_val_preds <- predict(best_svm, newdata = val)
+rmse_svm_val <- sqrt(mean((val$Stress.Level - svm_val_preds)^2))
+
+cat("Tuned SVM - Out-of-sample RMSE:", round(rmse_svm_val, 4), "\n")
+
+# Assign distinct names to tuned SVM RMSEs (if not done yet)
+rmse_svm_train_tuned <- sqrt(mean((train$Stress.Level - predict(best_svm, newdata = train))^2))
+rmse_svm_val_tuned <- sqrt(mean((val$Stress.Level - predict(best_svm, newdata = val))^2))
+
+# Update table with correct values
+model_5c_names <- c("Multivariate Linear", 
+                    "Multivariate Nonlinear", 
+                    "Elastic Net", 
+                    "SVM", 
+                    "Tuned SVM")
+
+in_rmse_5c <- c(rmse_train, 
+                rmse_nl_train, 
+                in_rmse_enet, 
+                rmse_svm_train,        # original SVM
+                rmse_svm_train_tuned)  # tuned SVM
+
+out_rmse_5c <- c(rmse_val, 
+                 rmse_nl_val, 
+                 test_rmse_enet, 
+                 rmse_svm_val,         # original SVM
+                 rmse_svm_val_tuned)   # tuned SVM
+
+# Rebuild and print table
+summary_5c <- data.frame(
+  Model = model_5c_names,
+  In_Sample_RMSE = round(in_rmse_5c, 4),
+  Out_of_Sample_RMSE = round(out_rmse_5c, 4)
+)
+
+print(summary_5c)
+
+cat("Best model based on out-of-sample RMSE:", 
+    summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
+
+library(tibble)  # ensure it's loaded
+
+#SPECIFYING THE REGRESSION TREE MODEL
+reg_spec <- decision_tree(min_n = 20 , #minimum number of observations for split
+                          tree_depth = 30, #max tree depth
+                          cost_complexity = 0.01)  %>% #regularization parameter
+  set_engine("rpart") %>%
+  set_mode("regression")
+print(reg_spec)
+
+#ESTIMATING THE MODEL (CAN BE DONE IN ONE STEP ABOVE WITH EXTRA %>%)
+reg_fmla <- Stress.Level ~ .
+reg_tree <- reg_spec %>%
+  fit(formula = reg_fmla, data = train)
+print(reg_tree)
+
+# Predict on training data
+train_preds <- predict(reg_tree, new_data = train) %>%
+  bind_cols(train %>% select(Stress.Level))  # Add actual values
+
+# Calculate in-sample metrics
+train_metrics <- train_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred)
+
+print("In-Sample Performance:")
+print(train_metrics)
+
+
+# Loop through all columns in test that are also in train
+for (col in names(test)) {
+  if (is.factor(train[[col]])) {
+    test[[col]] <- factor(test[[col]], levels = levels(train[[col]]))
+  }
 }
-#STORE ERRORS VS. LAMBDAS IN SEPARATE DATAFRAMES
-df_IN <- data.frame(cbind(Error=as.numeric(E_IN), Lambda=lambda))
-df_OUT <- data.frame(cbind(Error=as.numeric(E_OUT), Lambda=lambda))
-#REPORT MINIMUM E_OUT ESTIMATE FROM BEST REGULARIZED MODEL
-(min(df_OUT$Error))
-#RECOVER OPTIMAL LAMBDA
-(Opt_Lambda <- df_OUT$Lambda[which.min(df_OUT$Error)])
 
-library(broom) #FOR tidy() AND glance()
-library(MASS) #FOR lm.ridge()
-library(lmridge) #FOR lmridge()
-#LOADING LIBRARIES
-library(vtreat) #FOR kWayCrossValidation()
-library(Metrics) #FOR rmse()
+test$Occupation <- factor(test$Occupation, levels = levels(train$Occupation))
 
+levels(train$Occupation)
+levels(test$Occupation)
 
-glm.qpois<-glm(Stress.Level ~ Quality.of.Sleep, data = df, family = quasipoisson())
-summary(glm.qpois)
+for (col in names(train)) {
+  if (is.factor(train[[col]])) {
+    test[[col]] <- factor(test[[col]], levels = levels(train[[col]]))
+  }
+}
 
-log.glm.qpois<-glm(Stress.Level ~ log(Quality.of.Sleep), data = df, family = quasipoisson())
-summary(log.glm.qpois)
+train$Occupation <- as.factor(train$Occupation)
+test$Occupation <- as.factor(test$Occupation)
 
-plot(df$Stress.Level ~ df$Quality.of.Sleep) #REMIND OURSELVES WHAT THIS LOOKS LIKE
+# Predict on test data
+test_preds <- predict(reg_tree, new_data = test) %>%
+  bind_cols(data.frame(Stress.Level = test$Stress.Level))
 
-#build the model with the training partition
-M.1qpois<-glm(Stress.Level ~ Quality.of.Sleep, data = train, family = quasipoisson())
-summary(M.1qpois)
-M.logqpois<-glm(Stress.Level ~ log(Quality.of.Sleep), data = train, family = quasipoisson())
-summary(M.logqpois)
-M.2qpois<-glm(Stress.Level ~ Quality.of.Sleep, data = holdout, family = quasipoisson())
-summary(M.2qpois)
-M.2logqpois<-glm(Stress.Level ~ log(Quality.of.Sleep), data = holdout, family = quasipoisson())
-summary(M.2logqpois)
-plot(train$Stress.Level ~ train$Quality.of.Sleep)
-plot(holdout$Stress.Level ~ holdout$Quality.of.Sleep)
-##LOAD LIBRARIES
-library(tidyverse) #includes dplyr and ggplot2
-library(tseries) #for the J-B test
-library(ggthemes) #for pre-loaded themes for ggplot2
+# Calculate out-of-sample metrics
+test_metrics <- test_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred)
 
-##ADD A (LINEAR) SMOOTHER  AND SOME FORMATTING TO THE SCATTER
-plot(train$Stress.Level, train$Quality.of.Sleep, type = "l", col = "blue", ylim = range(c(train$Quality.of.Sleep, holdout$Quality.of.Sleep)), 
-     xlab = "Stress Levels", ylab = "Quality of Sleep", main = "How Stress Levels Affects Quality of Sleep")
-lines(holdout$Stress.Level, holdout$Quality.of.Sleep, col = "red", lty = 2)
-legend("topright", legend = c("Train", "Holdout"), col = c("blue", "red"), lty = c(1, 2))
+print("Out-of-Sample Performance:")
+print(test_metrics)
 
-model <- lm(Quality.of.Sleep ~ Stress.Level, data = holdout)
+install.packages("rpart.plot")  # Run only once if not already installed
+library(rpart.plot)
 
-# Combine for consistent x-axis scaling
-x_min <- 0
-x_max <- 12
-y_min <- 0
-y_max <- 12
-
-plot(train$Stress.Level, train$Quality.of.Sleep, type = "p", col = "blue", 
-     xlab = "Stress Level", ylab = "Quality of Sleep", 
-     main = "How Stress Levels Affects Quality of Sleep", 
-     ylim = range(c(train$Quality.of.Sleep, holdout$Quality.of.Sleep)))
-abline(a = y_max, b = -(y_max - y_min) / (x_max - x_min), col = "red", lwd = 2)
+# Plot the tree
+rpart.plot(reg_tree$fit,
+           type = 4,        # Fancy split labels
+           extra = 101,     # Show fitted values and % of observations
+           fallen.leaves = TRUE,
+           roundint = FALSE,
+           main = "Regression Tree for Stress Level",
+           cex = .7)  # Bigger text
