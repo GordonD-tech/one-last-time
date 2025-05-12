@@ -1,5 +1,4 @@
 # Load libraries
-install.packages("glmnet")
 library(tidymodels)
 library(caret)
 library(MASS)
@@ -10,6 +9,9 @@ library(tseries)
 library(ggthemes)
 library(ggplot2)
 library(glmnet)  # For Elastic Net
+library(shape)
+install.packages ("glmnet")
+library(rpart.plot)
 
 # Load dataset
 df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
@@ -103,8 +105,6 @@ y_trainval <- combined$Stress.Level[1:(nrow(train) + nrow(val))]
 X_test <- X_all[(nrow(train) + nrow(val) + 1):nrow(combined), ]
 y_test <- test$Stress.Level
 
-library(glmnet)
-
 cv_model <- cv.glmnet(X_trainval, y_trainval, alpha = 0.5)
 best_lambda_enet <- cv_model$lambda.min
 cat("Best lambda (Elastic Net):", best_lambda_enet, "\n")
@@ -160,4 +160,20 @@ print(summary_5c)
 cat("Best model based on out-of-sample RMSE:", 
     summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
 
+#SPECIFYING THE REGRESSION TREE MODEL
+reg_spec <- decision_tree(min_n = 20 , #minimum number of observations for split
+                          tree_depth = 30, #max tree depth
+                          cost_complexity = 0.01)  %>% #regularization parameter
+  set_engine("rpart") %>%
+  set_mode("regression")
+print(reg_spec)
 
+#ESTIMATING THE MODEL (CAN BE DONE IN ONE STEP ABOVE WITH EXTRA %>%)
+reg_fmla <- Stress.Level ~ .
+reg_tree <- reg_spec %>%
+  fit(formula = reg_fmla, data = train)
+print(reg_tree)
+
+#VISUALIZING THE REGRESSION TREE
+reg_tree$fit %>%
+  rpart.plot(type = 4, roundint = FALSE)
