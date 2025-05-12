@@ -293,3 +293,83 @@ rpart.plot(reg_tree$fit,
            main = "Regression Tree for Stress Level",
            cex = .7)  # Bigger text
 
+rf_spec <- rand_forest(
+  mode = "regression",
+  mtry = 3,              # Number of predictors to try at each split
+  trees = 500,           # Number of trees
+  min_n = 5              # Minimum samples per node
+) %>%
+  set_engine("ranger")   # Use the fast "ranger" engine
+rf_model <- rf_spec %>%
+  fit(Stress.Level ~ ., data = train)
+
+# Make predictions
+train_preds <- predict(rf_model, new_data = train) %>%
+  bind_cols(data.frame(Stress.Level = train$Stress.Level))
+
+test_preds <- predict(rf_model, new_data = test) %>%
+  bind_cols(data.frame(Stress.Level = test$Stress.Level))
+
+# In-sample performance
+train_metrics <- train_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred)
+
+# Out-of-sample performance
+test_metrics <- test_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred)
+
+print("In-Sample Performance:")
+print(train_metrics)
+
+print("Out-of-Sample Performance:")
+print(test_metrics)
+ #TUNING ENSEMBLE MODEl
+rf_spec <- rand_forest(
+  mode = "regression",
+  mtry = tune(),      # to be tuned
+  min_n = tune(),
+  trees = 500
+) %>%
+  set_engine("ranger")
+
+set.seed(123)
+cv_folds <- vfold_cv(train, v = 5)
+
+rf_workflow <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_formula(Stress.Level ~ .)
+
+detach("package:Metrics", unload = TRUE)
+library(yardstick)  # Make sure it's loaded after detaching Metrics
+metric_set(rmse)
+
+rf_grid <- grid_random(
+  mtry(range = c(1, ncol(train) - 1)),
+  min_n(range = c(2, 20)),
+  size = 20  # number of combinations to try
+)
+
+tuned_results <- tune_grid(
+  rf_workflow,
+  resamples = cv_folds,
+  grid = rf_grid,
+  metrics = metric_set(rmse)
+)
+
+best_params <- select_best(tuned_results, metric = "rmse")
+
+final_rf <- finalize_model(rf_spec, best_params)
+
+final_workflow <- rf_workflow %>%
+  finalize_workflow(best_params)
+
+# Fit on full training data
+final_model <- fit(final_workflow, data = train)
+
+test_preds <- predict(final_model, new_data = test) %>%
+  bind_cols(data.frame(Stress.Level = test$Stress.Level))
+
+test_metrics <- test_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred)
+
+print(test_metrics)
