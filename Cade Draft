@@ -237,6 +237,10 @@ reg_tree <- reg_spec %>%
   fit(formula = reg_fmla, data = train)
 print(reg_tree)
 
+# Predict on training data
+train_preds <- predict(reg_tree, new_data = train) %>%
+  bind_cols(train %>% select(Stress.Level))  # Add actual values
+
 # Calculate in-sample metrics
 train_metrics <- train_preds %>%
   metrics(truth = Stress.Level, estimate = .pred)
@@ -282,3 +286,4 @@ rpart.plot(reg_tree$fit,
            roundint = FALSE,
            main = "Regression Tree for Stress Level",
            cex = .7)  # Bigger text
+
