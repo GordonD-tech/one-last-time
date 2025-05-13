@@ -9,6 +9,11 @@ library(tseries)
 library(ggthemes)
 library(ggplot2)
 library(glmnet)  # For Elastic Net
+library(baguette) #FOR BAGGED TREES
+library(ranger) #FOR RANDOM FORESTS
+library(randomForest) #ALT RANDOM FOREST PACKAGE
+library(xgboost) #FOR GRADIENT BOOSTING
+library(vip) #FOR VARIABLE IMPORTANCE
 
 # Load dataset
 df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
@@ -180,16 +185,10 @@ tune_result <- tune(
 # Best model
 best_svm <- tune_result$best.model
 
-# Predict on training set (in-sample)
-svm_train_preds_tuned <- predict(best_svm, newdata = train)
-rmse_svm_train_tuned <- sqrt(mean((train$Stress.Level - svm_train_preds_tuned)^2))
-
-# Predict on validation set (out-of-sample)
+# Predict on validation set
 svm_val_preds_tuned <- predict(best_svm, newdata = val)
 rmse_svm_val_tuned <- sqrt(mean((val$Stress.Level - svm_val_preds_tuned)^2))
 
-# Output both RMSEs
-cat("Tuned SVM - In-sample RMSE:", round(rmse_svm_train_tuned, 4), "\n")
 cat("Tuned SVM - Out-of-sample RMSE:", round(rmse_svm_val_tuned, 4), "\n")
 
 # Assign distinct names to tuned SVM RMSEs (if not done yet)
@@ -227,7 +226,6 @@ print(summary_5c)
 cat("Best model based on out-of-sample RMSE:", 
     summary_5c$Model[which.min(summary_5c$Out_of_Sample_RMSE)], "\n")
 
-# Creating Decision Tree
 library(tibble)  # ensure it's loaded
 
 #SPECIFYING THE REGRESSION TREE MODEL
@@ -290,20 +288,6 @@ print(test_metrics)
 
 install.packages("rpart.plot")  # Run only once if not already installed
 library(rpart.plot)
-# Install and load ranger for random forest modeling
-if (!requireNamespace("ranger", quietly = TRUE)) {
-  install.packages("ranger")
-}
-library(ranger)
-
-# Example: set up a random forest model using ranger engine
-library(tidymodels)
-
-rf_model <- rand_forest(mtry = 2, trees = 500, min_n = 5) %>%
-  set_engine("ranger") %>%
-  set_mode("regression")
-
-print(rf_model)
 
 # Plot the tree
 rpart.plot(reg_tree$fit,
@@ -323,7 +307,6 @@ rf_spec <- rand_forest(
   set_engine("ranger")   # Use the fast "ranger" engine
 rf_model <- rf_spec %>%
   fit(Stress.Level ~ ., data = train)
-
 
 # Make predictions
 train_preds <- predict(rf_model, new_data = train) %>%
@@ -395,3 +378,60 @@ test_metrics <- test_preds %>%
   metrics(truth = Stress.Level, estimate = .pred)
 
 print(test_metrics)
+
+# Extract RMSE values from yardstick metrics tibbles
+tree_test_rmse <- test_metrics %>% filter(.metric == "rmse") %>% pull(.estimate)
+tree_train_rmse <- train_metrics %>% filter(.metric == "rmse") %>% pull(.estimate)
+
+# You’ll also want to extract RMSE for final tuned random forest
+final_test_preds <- predict(final_model, new_data = test) %>%
+  bind_cols(data.frame(Stress.Level = test$Stress.Level))
+
+final_rf_rmse <- final_test_preds %>%
+  metrics(truth = Stress.Level, estimate = .pred) %>%
+  filter(.metric == "rmse") %>%
+  pull(.estimate)
+
+# Predict on training data (in-sample)
+train_preds_rf <- predict(final_model, new_data = train) %>%
+  bind_cols(data.frame(Stress.Level = train$Stress.Level))
+# Calculate in-sample RMSE for the final RF model
+train_rmse_rf <- train_preds_rf %>%
+  metrics(truth = Stress.Level, estimate = .pred) %>%
+  filter(.metric == "rmse") %>%
+  pull(.estimate)
+# Predict on validation data (validation RMSE)
+val_preds_rf <- predict(final_model, new_data = val) %>%
+  bind_cols(data.frame(Stress.Level = val$Stress.Level))
+# Calculate validation RMSE for the final RF model
+val_rmse_rf <- val_preds_rf %>%
+  metrics(truth = Stress.Level, estimate = .pred) %>%
+  filter(.metric == "rmse") %>%
+  pull(.estimate)
+model_performance <- tibble(
+  model_5c_names <- c("Multivariate Linear", 
+                      "Multivariate Nonlinear", 
+                      "Elastic Net", 
+                      "SVM", 
+                      "Tuned SVM",
+                      "Regression Tree", 
+                      "Tuned Random Forest"),
+  
+  in_rmse_5c <- c(rmse_train, 
+                  rmse_nl_train, 
+                  in_rmse_enet, 
+                  rmse_svm_train,        # original SVM
+                  rmse_svm_train_tuned,
+                  tree_train_rmse,         
+                  train_rmse_rf),  # tuned SVM
+  
+  out_rmse_5c <- c(rmse_val, 
+                   rmse_nl_val, 
+                   test_rmse_enet, 
+                   rmse_svm_val,         # original SVM
+                   rmse_svm_val_tuned,
+                   tree_test_rmse,  
+                   val_rmse_rf),  
+  Test_RMSE = round(c(NA, NA, NA, NA, NA, tree_test_rmse, final_rf_rmse), 4))   # tuned SVM
+
+print(model_performance)
