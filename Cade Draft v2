@@ -435,3 +435,81 @@ model_performance <- tibble(
   Test_RMSE = round(c(NA, NA, NA, NA, NA, tree_test_rmse, final_rf_rmse), 4))   # tuned SVM
 
 print(model_performance)
+
+# Report the selected final model and its test performance
+cat("\n✅ Final model selected based on validation RMSE: Tuned Random Forest\n")
+cat("📉 Test RMSE (uncontaminated out-of-sample error):", round(final_rf_rmse, 4), "\n")
+
+# Task #6, Classification 
+# Changing stess level to catagorical variable (Stress.Category)
+library(dplyr)
+
+df <- df %>%
+  mutate(Stress.Category = case_when(
+    Stress.Level < 6  ~ "Low",
+    Stress.Level == 6 ~ "Average",
+    Stress.Level > 6  ~ "High"
+  ))
+
+df <- df %>%
+  mutate(Stress.Category = factor(Stress.Category, levels = c("Low", "Average", "High")))
+
+library(tidymodels)
+
+# Partition data using Stress.Category for stratified sampling
+set.seed(123)
+split1 <- initial_split(df, prop = 0.7, strata = Stress.Category)
+train <- training(split1)
+holdout <- testing(split1)
+
+split2 <- initial_split(holdout, prop = 0.5, strata = Stress.Category)
+val <- training(split2)
+test <- testing(split2)
+
+# Load MASS package for ordinal logistic regression
+library(MASS)
+
+# 1. Find the most common (majority) class in the training set
+majority_class <- names(sort(table(train$Stress.Category), decreasing = TRUE))[1]
+cat("Majority class is:", majority_class, "\n")
+
+# 2. Predict the majority class for every observation in the validation set
+baseline_preds <- factor(rep(majority_class, nrow(val)),
+                         levels = levels(val$Stress.Category))
+
+# 3. Calculate accuracy of baseline model
+baseline_accuracy <- mean(baseline_preds == val$Stress.Category)
+cat("Baseline model accuracy (always predicts", majority_class, "):", baseline_accuracy, "\n")
+
+# Fit ordinal logistic regression model with multiple numeric variables
+ord_logit_model_activity <- polr(
+  Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level,
+  data = train,
+  Hess = TRUE
+)
+
+# View model summary
+summary(ord_logit_model_activity)
+
+# Predict on validation set
+val_preds_activity <- predict(ord_logit_model_activity, newdata = val)
+
+# Accuracy
+mean(val_preds_activity == val$Stress.Category)
+#confusion Matrix
+table(Predicted = val_preds_activity, Actual = val$Stress.Category)
+
+# Try with fewer predictors to test convergence
+ord_logit_model_simple <- polr(Stress.Category ~ Quality.of.Sleep + Age,
+                               data = train,
+                               Hess = TRUE)
+
+summary(ord_logit_model_simple)
+
+# Predict on validation set
+val_preds <- predict(ord_logit_model_simple, newdata = val)
+
+# Accuracy
+mean(val_preds == val$Stress.Category)
+#confusion Matrix
+table(Predicted = val_preds, Actual = val$Stress.Category)
