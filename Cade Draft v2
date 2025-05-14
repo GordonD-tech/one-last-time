@@ -481,6 +481,11 @@ baseline_preds <- factor(rep(majority_class, nrow(val)),
 baseline_accuracy <- mean(baseline_preds == val$Stress.Category)
 cat("Baseline model accuracy (always predicts", majority_class, "):", baseline_accuracy, "\n")
 
+# Probit model
+probit_model <- glm(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level, 
+                    data = train, 
+                    family = binomial(link = "probit"))
+
 # Fit ordinal logistic regression model with multiple numeric variables
 ord_logit_model_activity <- polr(
   Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level,
@@ -490,9 +495,23 @@ ord_logit_model_activity <- polr(
 
 # View model summary
 summary(ord_logit_model_activity)
+summary(probit_model)
 
 # Predict on validation set
 val_preds_activity <- predict(ord_logit_model_activity, newdata = val)
+val_preds_activity_probit <- predict(probit_model, newdata = val)
+
+# Compute AUC
+roc_logit <- roc(Stress.Category, ord_logit_model_activity)
+roc_probit <- roc(Stress.Category, probit_model)
+
+auc(roc_logit)
+auc(roc_probit)
+
+# Optional: Plot ROC curves
+plot(roc_logit, col = "blue", main = "ROC Curves: Logit vs Probit")
+lines(roc_probit, col = "red")
+legend("bottomright", legend = c("Logit", "Probit"), col = c("blue", "red"), lwd = 2)
 
 # Accuracy
 mean(val_preds_activity == val$Stress.Category)
@@ -509,7 +528,300 @@ summary(ord_logit_model_simple)
 # Predict on validation set
 val_preds <- predict(ord_logit_model_simple, newdata = val)
 
+# Define SVM model
+svm_spec <- svm_rbf(mode = "classification") %>%
+  set_engine("kernlab")
+
+# Fit the model
+svm_fit <- workflow() %>%
+  add_model(svm_spec) %>%
+  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level) %>%
+  fit(data = train)
+
+# In-sample prediction for SVM
+train_preds <- predict(svm_fit, new_data = train) %>%
+  bind_cols(train %>% select(Stress.Category))
+
+# Out-of-sample (validation set) prediction for SVM
+val_preds <- predict(svm_fit, new_data = val) %>%
+  bind_cols(val %>% select(Stress.Category))
+
+# Accuracy for SVM
+train_acc <- train_preds %>%
+  metrics(truth = Stress.Category, estimate = .pred_class) %>%
+  filter(.metric == "accuracy")
+
+val_acc <- val_preds %>%
+  metrics(truth = Stress.Category, estimate = .pred_class) %>%
+  filter(.metric == "accuracy")
+
+# Define SVM model with tuning
+svm_tune_spec <- svm_rbf(
+  mode = "classification",
+  cost = tune(),
+  rbf_sigma = tune()
+) %>%
+  set_engine("kernlab")
+
+# Create SVM workflow
+svm_workflow <- workflow() %>%
+  add_model(svm_tune_spec) %>%
+  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level)
+
+# Define tuning grid
+svm_grid <- grid_regular(cost(), rbf_sigma(), levels = 5)
+
+# Perform tuning
+set.seed(123)
+svm_res <- tune_grid(
+  svm_workflow,
+  resamples = vfold_cv(train, v = 5, strata = Stress.Category),
+  grid = svm_grid,
+  metrics = metric_set(accuracy)
+)
+
+# Select best parameters
+best_svm <- select_best(svm_res, "accuracy")
+
+# Finalize model with best parameters
+final_svm <- finalize_workflow(svm_workflow, best_svm) %>%
+  fit(data = train)
+
+# Predict on validation set with tuned model
+val_preds_tuned <- predict(final_svm, new_data = val) %>%
+  bind_cols(val %>% select(Stress.Category))
+
+val_acc_tuned <- val_preds_tuned %>%
+  metrics(truth = Stress.Category, estimate = .pred_class) %>%
+  filter(.metric == "accuracy")
+
 # Accuracy
 mean(val_preds == val$Stress.Category)
 #confusion Matrix
 table(Predicted = val_preds, Actual = val$Stress.Category)
+####*****Classification Tree#########
+# Define recipe
+tree_rec <- recipe(Stress.Category ~ ., data = train_data) %>%
+  step_dummy(all_nominal_predictors()) %>%  # if needed
+  step_zv(all_predictors())                 # remove zero variance
+
+# Classification tree model
+tree_mod <- decision_tree(mode = "classification") %>%
+  set_engine("rpart")
+
+# Workflow
+tree_wf <- workflow() %>%
+  add_model(tree_mod) %>%
+  add_recipe(tree_rec)
+
+# Fit to training data
+tree_fit <- tree_wf %>% fit(data = train_data)
+
+# Predict on training
+train_preds <- predict(tree_fit, train_data, type = "class") %>%
+  bind_cols(train_data)
+
+# Predict on test
+test_preds <- predict(tree_fit, test_data, type = "class") %>%
+  bind_cols(test_data)
+
+# Evaluate in-sample and out-of-sample
+train_metrics <- train_preds %>%
+  metrics(truth = Stress.Category, estimate = .pred_class)
+
+test_metrics <- test_preds %>%
+  metrics(truth = Stress.Category, estimate = .pred_class)
+
+print(train_metrics)
+print(test_metrics)
+
+# Extract tree for plotting
+tree_model <- extract_fit_parsnip(tree_fit)$fit
+rpart.plot(tree_model)
+
+# Model with tuning
+tree_mod_tuned <- decision_tree(
+  mode = "classification",
+  cost_complexity = tune(),
+  tree_depth = tune()
+) %>% set_engine("rpart")
+
+# Workflow
+tree_wf_tuned <- workflow() %>%
+  add_model(tree_mod_tuned) %>%
+  add_recipe(tree_rec)
+
+# 5-fold CV
+tree_folds <- vfold_cv(train_data, v = 5, strata = Stress.Category)
+
+# Grid search
+tree_grid <- grid_regular(
+  cost_complexity(),
+  tree_depth(),
+  levels = 5
+)
+
+# Tuning
+tree_tune_res <- tune_grid(
+  tree_wf_tuned,
+  resamples = tree_folds,
+  grid = tree_grid,
+  metrics = metric_set(accuracy, roc_auc)
+)
+
+# Best model
+best_tree <- select_best(tree_tune_res, "accuracy")
+final_tree <- finalize_workflow(tree_wf_tuned, best_tree)
+final_fit <- final_tree %>% fit(train_data)
+
+# Final test set predictions
+final_preds <- predict(final_fit, test_data, type = "class") %>%
+  bind_cols(test_data)
+
+final_metrics <- final_preds %>%
+  metrics(truth = Stress.Category, estimate = .pred_class)
+
+print(final_metrics)
+
+
+####Tree Model####
+# Recipe
+rf_rec <- recipe(Stress.Category ~ ., data = train_data) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+# Model (initial, untuned)
+rf_mod <- rand_forest(mode = "classification") %>%
+  set_engine("ranger")
+
+# Workflow
+rf_wf <- workflow() %>%
+  add_recipe(rf_rec) %>%
+  add_model(rf_mod)
+
+# Fit model to training data
+rf_fit <- rf_wf %>% fit(data = train_data)
+
+# Predictions
+train_preds_rf <- predict(rf_fit, train_data, type = "class") %>%
+  bind_cols(train_data)
+
+test_preds_rf <- predict(rf_fit, test_data, type = "class") %>%
+  bind_cols(test_data)
+
+# Accuracy and ROC AUC
+train_metrics_rf <- train_preds_rf %>%
+  metrics(truth = Stress.Category, estimate = .pred_class)
+
+test_metrics_rf <- test_preds_rf %>%
+  metrics(truth = Stress.Category, estimate = .pred_class)
+
+print(train_metrics_rf)
+print(test_metrics_rf)
+
+# Model with tuning parameters
+rf_mod_tuned <- rand_forest(
+  mode = "classification",
+  mtry = tune(),
+  trees = 500,
+  min_n = tune()
+) %>% set_engine("ranger")
+
+# Workflow
+rf_wf_tuned <- workflow() %>%
+  add_recipe(rf_rec) %>%
+  add_model(rf_mod_tuned)
+
+# Cross-validation folds
+rf_folds <- vfold_cv(train_data, v = 5, strata = Stress.Category)
+
+# Grid search
+rf_grid <- grid_regular(
+  mtry(range = c(2, 10)),
+  min_n(range = c(2, 10)),
+  levels = 5
+)
+
+# Tune the model
+rf_tune_res <- tune_grid(
+  rf_wf_tuned,
+  resamples = rf_folds,
+  grid = rf_grid,
+  metrics = metric_set(accuracy, roc_auc)
+)
+
+# Get best model by accuracy
+best_rf <- select_best(rf_tune_res, "accuracy")
+
+# Final model
+final_rf_wf <- finalize_workflow(rf_wf_tuned, best_rf)
+final_rf_fit <- final_rf_wf %>% fit(train_data)
+
+# Predict on test set
+final_rf_preds <- predict(final_rf_fit, test_data, type = "class") %>%
+  bind_cols(test_data)
+
+final_rf_metrics <- final_rf_preds %>%
+  metrics(truth = Stress.Category, estimate = .pred_class)
+
+print(final_rf_metrics)
+
+model_names <- c(
+  "Logistic Regression",
+  "Probit Model",
+  "SVM (Untuned)",
+  "SVM (Tuned)",
+  "Classification Tree",
+  "Tree (Tuned)",
+  "Random Forest (Untuned)",
+  "Random Forest (Tuned)"
+)
+
+in_sample <- c(
+  acc_logit_train,
+  acc_probit_train,
+  acc_svm_train,
+  acc_svm_tuned_train,
+  acc_tree_train,
+  acc_tree_tuned_train,
+  acc_rf_train,
+  acc_rf_tuned_train
+)
+
+out_of_sample <- c(
+  acc_logit_val,
+  acc_probit_val,
+  acc_svm_val,
+  acc_svm_tuned_val,
+  acc_tree_val,
+  acc_tree_tuned_val,
+  acc_rf_val,
+  acc_rf_tuned_val
+)
+
+test_performance <- c(
+  acc_logit_test,
+  acc_probit_test,
+  acc_svm_test,
+  acc_svm_tuned_test,
+  acc_tree_test,
+  acc_tree_tuned_test,
+  acc_rf_test,
+  acc_rf_tuned_test
+)
+
+# Create the summary table
+performance_table <- tibble(
+  Model = model_names,
+  In_Sample_Accuracy = round(in_sample, 4),
+  Validation_Accuracy = round(out_of_sample, 4),
+  Test_Accuracy = round(test_performance, 4)
+)
+
+print(performance_table)
+
+
+
+
+
+
