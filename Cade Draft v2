@@ -488,7 +488,7 @@ probit_model <- glm(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity
 
 # Fit ordinal logistic regression model with multiple numeric variables
 ord_logit_model_activity <- polr(
-  Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level,
+  Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level + Sleep.Duration,
   data = train,
   Hess = TRUE
 )
@@ -519,7 +519,7 @@ mean(val_preds_activity == val$Stress.Category)
 table(Predicted = val_preds_activity, Actual = val$Stress.Category)
 
 # Try with fewer predictors to test convergence
-ord_logit_model_simple <- polr(Stress.Category ~ Quality.of.Sleep + Age,
+ord_logit_model_simple <- polr(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration,
                                data = train,
                                Hess = TRUE)
 
@@ -535,7 +535,7 @@ svm_spec <- svm_rbf(mode = "classification") %>%
 # Fit the model
 svm_fit <- workflow() %>%
   add_model(svm_spec) %>%
-  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level) %>%
+  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level + Sleep.Duration) %>%
   fit(data = train)
 
 # In-sample prediction for SVM
@@ -566,7 +566,7 @@ svm_tune_spec <- svm_rbf(
 # Create SVM workflow
 svm_workflow <- workflow() %>%
   add_model(svm_tune_spec) %>%
-  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level)
+  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level + Sleep.Duration)
 
 # Define tuning grid
 svm_grid <- grid_regular(cost(), rbf_sigma(), levels = 5)
