@@ -110,3 +110,173 @@ ggplot(train, aes(x = Quality.of.Sleep, y = Stress.Level)) +
   labs(title = "Model Fits on Training Set", x = "Quality of Sleep", y = "Stress Level") +
   scale_color_manual(values = c("Linear" = "blue", "Log" = "green", "Poisson Linear" = "purple", "Poisson Log" = "orange")) +
   theme_minimal()
+
+# Multivariate Models #######################################
+
+# ---- MODEL DEFINITIONS ----
+# Multivariate Linear Model
+model_lm <- lm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train)
+model_nl <- lm(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = train)
+summary(model_lm)
+summary(model_nl)
+# Elastic Net
+combined <- rbind(train, val, test)
+X_all <- model.matrix(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = combined)[, -1]
+y_all <- combined$Stress.Level
+X_trainval <- X_all[1:(nrow(train) + nrow(val)), ]
+y_trainval <- y_all[1:(nrow(train) + nrow(val))]
+X_test <- X_all[(nrow(train) + nrow(val) + 1):nrow(combined), ]
+y_test <- test$Stress.Level
+cv_model <- cv.glmnet(X_trainval, y_trainval, alpha = 0.5)
+best_lambda_enet <- cv_model$lambda.min
+
+# Load required package
+library(glmnet)
+
+# Display summary of coefficients at best lambda
+enet_coef <- coef(cv_model, s = best_lambda_enet)
+
+# Convert to readable table
+enet_summary <- as.data.frame(as.matrix(enet_coef))
+names(enet_summary) <- "Coefficient"
+enet_summary <- enet_summary[enet_summary$Coefficient != 0, , drop = FALSE]  # Remove zero coefficients
+
+# Print the summary table
+print(round(enet_summary, 4))
+
+
+# SVM
+library(e1071)
+svm_model <- svm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train,
+                 kernel = "radial", cost = 1, epsilon = 0.1)
+summary(svm_model)
+# Tuned SVM
+library(tidymodels)
+tune_result <- tune(
+  svm,
+  Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+  data = train,
+  ranges = list(cost = c(0.1, 1, 10, 100), gamma = c(0.01, 0.1, 1), epsilon = c(0.01, 0.1, 0.5))
+)
+best_svm <- tune_result$best.model
+summary(best_svm)
+# Regression Tree
+reg_spec <- decision_tree(min_n = 20, tree_depth = 30, cost_complexity = 0.01) %>%
+  set_engine("rpart") %>% set_mode("regression")
+reg_tree <- reg_spec %>% fit(Stress.Level ~ ., data = train)
+
+# Random Forest
+rf_spec <- rand_forest(mode = "regression", mtry = 3, trees = 500, min_n = 5) %>%
+  set_engine("ranger")
+rf_model <- rf_spec %>% fit(Stress.Level ~ ., data = train)
+
+# Tuned Random Forest
+rf_tune_spec <- rand_forest(mode = "regression", mtry = tune(), min_n = tune(), trees = 500) %>%
+  set_engine("ranger")
+rf_wf <- workflow() %>% add_model(rf_tune_spec) %>% add_formula(Stress.Level ~ .)
+cv_folds <- vfold_cv(train, v = 5)
+rf_grid <- grid_random(mtry(range = c(1, ncol(train) - 1)), min_n(range = c(2, 20)), size = 20)
+tuned_results <- tune_grid(rf_wf, resamples = cv_folds, grid = rf_grid, metrics = metric_set(rmse))
+best_params <- select_best(tuned_results, metric = "rmse")
+final_rf <- finalize_workflow(rf_wf, best_params)
+final_model <- fit(final_rf, data = train)
+
+# ---- PREDICTIONS & METRICS ----
+predict_metrics <- function(model, train_data, val_data, truth) {
+  pred_train <- predict(model, newdata = train_data)
+  pred_val <- predict(model, newdata = val_data)
+  rmse_train <- sqrt(mean((train_data[[truth]] - pred_train)^2))
+  rmse_val <- sqrt(mean((val_data[[truth]] - pred_val)^2))
+  rsq_train <- cor(train_data[[truth]], pred_train)^2
+  rsq_val <- cor(val_data[[truth]], pred_val)^2
+  return(list(rmse_train = rmse_train, rmse_val = rmse_val, rsq_train = rsq_train, rsq_val = rsq_val))
+}
+
+# Gather metrics for each model
+lm_metrics <- predict_metrics(model_lm, train, val, "Stress.Level")
+nl_metrics <- predict_metrics(model_nl, train, val, "Stress.Level")
+svm_metrics <- predict_metrics(svm_model, train, val, "Stress.Level")
+tuned_svm_metrics <- predict_metrics(best_svm, train, val, "Stress.Level")
+tree_metrics <- predict_metrics(reg_tree, train, val, "Stress.Level")
+rf_metrics <- predict_metrics(rf_model, train, val, "Stress.Level")
+final_rf_metrics <- predict_metrics(final_model, train, val, "Stress.Level")
+
+# Elastic net custom metrics
+pred_enet_train <- predict(cv_model, s = best_lambda_enet, newx = X_trainval)
+pred_enet_val <- predict(cv_model, s = best_lambda_enet, newx = model.matrix(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = val)[, -1])
+in_rmse_enet <- sqrt(mean((y_trainval - pred_enet_train)^2))
+val_rmse_enet <- sqrt(mean((val$Stress.Level - pred_enet_val)^2))
+rsq_train_enet <- cor(y_trainval, as.numeric(pred_enet_train))^2
+rsq_val_enet <- cor(val$Stress.Level, as.numeric(pred_enet_val))^2
+
+# ---- BUILD FINAL TABLE ----
+final_perf_table <- tibble(
+  Model = c("Multivariate Linear", "Multivariate Nonlinear", "Elastic Net", "SVM", "Tuned SVM", "Regression Tree", "Tuned Random Forest"),
+  Train_RMSE = round(c(lm_metrics$rmse_train, nl_metrics$rmse_train, in_rmse_enet, svm_metrics$rmse_train, tuned_svm_metrics$rmse_train, tree_metrics$rmse_train, final_rf_metrics$rmse_train), 4),
+  Val_RMSE = round(c(lm_metrics$rmse_val, nl_metrics$rmse_val, val_rmse_enet, svm_metrics$rmse_val, tuned_svm_metrics$rmse_val, tree_metrics$rmse_val, final_rf_metrics$rmse_val), 4),
+  Train_R_Squared = round(c(lm_metrics$rsq_train, nl_metrics$rsq_train, rsq_train_enet, svm_metrics$rsq_train, tuned_svm_metrics$rsq_train, tree_metrics$rsq_train, final_rf_metrics$rsq_train), 4),
+  Val_R_Squared = round(c(lm_metrics$rsq_val, nl_metrics$rsq_val, rsq_val_enet, svm_metrics$rsq_val, tuned_svm_metrics$rsq_val, tree_metrics$rsq_val, final_rf_metrics$rsq_val), 4)
+)
+
+# Print final comparison
+print(final_perf_table)
+
+# Predict on test set using the final tuned random forest model
+test_preds_rf <- predict(final_model, new_data = test) %>%
+  bind_cols(data.frame(Stress.Level = test$Stress.Level))
+
+# Calculate RMSE on test set
+test_rmse_rf <- test_preds_rf %>%
+  metrics(truth = Stress.Level, estimate = .pred) %>%
+  filter(.metric == "rmse") %>%
+  pull(.estimate)
+
+# Calculate R-squared on test set
+test_rsq_rf <- cor(test_preds_rf$Stress.Level, test_preds_rf$.pred)^2
+
+# Display results
+cat("\n✅ Final model tested on unseen data (Test Set)\n")
+cat("📉 Test RMSE:", round(test_rmse_rf, 4), "\n")
+cat("📈 Test R-squared:", round(test_rsq_rf, 4), "\n")
+
+# Optional: Create a tidy summary table
+final_test_summary <- tibble(
+  Model = "Tuned Random Forest",
+  Test_RMSE = round(test_rmse_rf, 4),
+  Test_R_Squared = round(test_rsq_rf, 4)
+)
+
+print(final_test_summary)
+
+# If not already installed
+# Install the necessary packages if not already installed
+# install.packages("randomForest")
+# install.packages("partykit")
+
+# Load libraries
+library(randomForest)
+library(partykit)
+
+# Fit the random forest model (this is for visualization only, not the tuned model)
+rf_fit_plot <- randomForest(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+                            data = train, ntree = 500)
+
+# Extract a single tree (e.g., the first one) from the forest
+single_tree <- getTree(rf_fit_plot, k = 1, labelVar = TRUE)
+
+# Convert the tree to a 'party' object for visualization
+# You need to refit a single tree as a model object for plotting:
+# Create a training subset based on splits in the extracted tree
+tree_model <- rpart::rpart(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train)
+
+# Convert to party object
+party_tree <- as.party(tree_model)
+
+
+# Plot with whole number predictions
+rpart.plot(tree_model,
+           type = 4,         # show predicted value at node
+           extra = 101,      # show % of observations + prediction
+           fallen.leaves = TRUE,
+           roundint = TRUE,  # round predictions to integers
+           main = "Stress Level Tree (Whole Number Predictions)")
