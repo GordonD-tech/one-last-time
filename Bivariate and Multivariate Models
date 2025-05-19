@@ -228,9 +228,9 @@ test_rmse_rf <- test_preds_rf %>%
 test_rsq_rf <- cor(test_preds_rf$Stress.Level, test_preds_rf$.pred)^2
 
 # Display results
-cat("\n✅ Final model tested on unseen data (Test Set)\n")
-cat("📉 Test RMSE:", round(test_rmse_rf, 4), "\n")
-cat("📈 Test R-squared:", round(test_rsq_rf, 4), "\n")
+cat("\n Final model tested on unseen data (Test Set)\n")
+cat("Test RMSE:", round(test_rmse_rf, 4), "\n")
+cat("Test R-squared:", round(test_rsq_rf, 4), "\n")
 
 # Optional: Create a tidy summary table
 final_test_summary <- tibble(
