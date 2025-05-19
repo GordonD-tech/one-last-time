@@ -1,1 +1,112 @@
+# Load libraries
+library(tidymodels)
+library(caret)
+library(MASS)
+library(lmridge)
+library(Metrics)
+library(tidyverse)
+library(tseries)
+library(ggthemes)
+library(ggplot2)
+library(glmnet)  # For Elastic Net
+library(baguette) #FOR BAGGED TREES
+library(ranger) #FOR RANDOM FORESTS
+library(randomForest) #ALT RANDOM FOREST PACKAGE
+library(xgboost) #FOR GRADIENT BOOSTING
+library(vip) #FOR VARIABLE IMPORTANCE
 
+# Load dataset
+df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
+
+# Check correlation
+cor_matrix <- cor(df[, sapply(df, is.numeric)], use = "complete.obs")
+print(cor_matrix["Stress.Level", ])
+
+# Load SVM library
+library(e1071)
+
+# Re-factor entire dataset first to capture all levels
+df$Gender <- as.factor(df$Gender)
+df$Occupation <- as.factor(df$Occupation)
+df$BMI.Category <- as.factor(df$BMI.Category)
+
+# Partition data
+set.seed(123)
+split1 <- initial_split(df, prop = 0.7, strata = Stress.Level)
+train <- training(split1)
+holdout <- testing(split1)
+split2 <- initial_split(holdout, prop = 0.5, strata = Stress.Level)
+val <- training(split2)
+test <- testing(split2)
+
+# Linear Models
+M1 <- lm(Stress.Level ~ Quality.of.Sleep, train)
+M2 <- lm(Stress.Level ~ log(Quality.of.Sleep), train)
+M3 <- lm(Stress.Level ~ Quality.of.Sleep, val)
+M4 <- lm(Stress.Level ~ log(Quality.of.Sleep), val)
+
+# Poisson Models (for both prediction and pseudo R²)
+M1_pois <- glm(Stress.Level ~ Quality.of.Sleep, data = train, family = poisson())
+M2_pois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = train, family = poisson())
+M3_pois <- glm(Stress.Level ~ Quality.of.Sleep, data = val, family = poisson())
+M4_pois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = val, family = poisson())
+
+# R-squared for linear models
+rsq_M1 <- summary(M1)$r.squared
+rsq_M2 <- summary(M2)$r.squared
+rsq_M3 <- summary(M3)$r.squared
+rsq_M4 <- summary(M4)$r.squared
+
+# Pseudo R² for Poisson models
+pseudo_M1 <- 1 - logLik(M1_pois) / logLik(update(M1_pois, . ~ 1))
+pseudo_M2 <- 1 - logLik(M2_pois) / logLik(update(M2_pois, . ~ 1))
+pseudo_M3 <- 1 - logLik(M3_pois) / logLik(update(M3_pois, . ~ 1))
+pseudo_M4 <- 1 - logLik(M4_pois) / logLik(update(M4_pois, . ~ 1))
+
+# RMSEs
+rmse_M1 <- sqrt(mean((train$Stress.Level - predict(M1))^2))
+rmse_M2 <- sqrt(mean((train$Stress.Level - predict(M2))^2))
+rmse_M3 <- sqrt(mean((val$Stress.Level - predict(M3))^2))
+rmse_M4 <- sqrt(mean((val$Stress.Level - predict(M4))^2))
+
+rmse_M1_pois <- sqrt(mean((train$Stress.Level - predict(M1_pois, type = "response"))^2))
+rmse_M2_pois <- sqrt(mean((train$Stress.Level - predict(M2_pois, type = "response"))^2))
+rmse_M3_pois <- sqrt(mean((val$Stress.Level - predict(M3_pois, type = "response"))^2))
+rmse_M4_pois <- sqrt(mean((val$Stress.Level - predict(M4_pois, type = "response"))^2))
+
+# Build results table
+rsq_table <- data.frame(
+  Model = c("Linear (Train)", "Log-Linear (Train)", "Linear (Val)", "Log-Linear (Val)",
+            "Poisson Linear (Train)", "Poisson Log (Train)", "Poisson Linear (Val)", "Poisson Log (Val)"),
+  R_Squared = round(c(rsq_M1, rsq_M2, rsq_M3, rsq_M4,
+                      as.numeric(pseudo_M1),
+                      as.numeric(pseudo_M2),
+                      as.numeric(pseudo_M3),
+                      as.numeric(pseudo_M4)), 4)
+)
+
+print(rsq_table)
+
+# Combined summary with RMSE
+model_summary <- data.frame(
+  Model = c("Linear", "Log-Linear", "Poisson Linear", "Poisson Log"),
+  
+  Train_R_Squared = round(c(rsq_M1, rsq_M2, as.numeric(pseudo_M1), as.numeric(pseudo_M2)), 4),
+  Val_R_Squared   = round(c(rsq_M3, rsq_M4, as.numeric(pseudo_M3), as.numeric(pseudo_M4)), 4),
+  
+  Train_RMSE      = round(c(rmse_M1, rmse_M2, rmse_M1_pois, rmse_M2_pois), 4),
+  Val_RMSE        = round(c(rmse_M3, rmse_M4, rmse_M3_pois, rmse_M4_pois), 4)
+)
+
+print(model_summary)
+
+#plot
+ggplot(train, aes(x = Quality.of.Sleep, y = Stress.Level)) +
+  geom_point(color = "black") +
+  stat_smooth(method = "lm", se = FALSE, aes(color = "Linear")) +
+  stat_smooth(method = "lm", formula = y ~ log(x), se = FALSE, aes(color = "Log")) +
+  geom_line(aes(y = predict(M1_pois, type = "response"), color = "Poisson Linear")) +
+  geom_line(aes(y = predict(M2_pois, type = "response"), color = "Poisson Log")) +
+  labs(title = "Model Fits on Training Set", x = "Quality of Sleep", y = "Stress Level") +
+  scale_color_manual(values = c("Linear" = "blue", "Log" = "green", "Poisson Linear" = "purple", "Poisson Log" = "orange")) +
+  theme_minimal()
