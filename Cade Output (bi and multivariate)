@@ -1,0 +1,419 @@
+> # Load libraries
+> library(tidymodels)
+> library(caret)
+> library(MASS)
+> library(lmridge)
+> library(Metrics)
+> library(tidyverse)
+> library(tseries)
+> library(ggthemes)
+> library(ggplot2)
+> library(glmnet)  # For Elastic Net
+> library(baguette) #FOR BAGGED TREES
+> library(ranger) #FOR RANDOM FORESTS
+> library(randomForest) #ALT RANDOM FOREST PACKAGE
+> library(xgboost) #FOR GRADIENT BOOSTING
+> library(vip) #FOR VARIABLE IMPORTANCE
+> # Load dataset
+> df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
+> # Check correlation
+> cor_matrix <- cor(df[, sapply(df, is.numeric)], use = "complete.obs")
+> print(cor_matrix["Stress.Level", ])
+              Person.ID                     Age          Sleep.Duration 
+            -0.39428708             -0.42234448             -0.81102303 
+       Quality.of.Sleep Physical.Activity.Level            Stress.Level 
+            -0.89875203             -0.03413446              1.00000000 
+             Heart.Rate             Daily.Steps 
+             0.67002646              0.18682895 
+> # Load SVM library
+> library(e1071)
+> # Re-factor entire dataset first to capture all levels
+> df$Gender <- as.factor(df$Gender)
+> df$Occupation <- as.factor(df$Occupation)
+> df$BMI.Category <- as.factor(df$BMI.Category)
+> # Partition data
+> set.seed(123)
+> split1 <- initial_split(df, prop = 0.7, strata = Stress.Level)
+> train <- training(split1)
+> holdout <- testing(split1)
+> split2 <- initial_split(holdout, prop = 0.5, strata = Stress.Level)
+> val <- training(split2)
+> test <- testing(split2)
+> # Load required package
+> library(pscl)
+Error in library(pscl) : there is no package called ‘pscl’
+> # Linear Models
+> M1 <- lm(Stress.Level ~ Quality.of.Sleep, train)
+> M2 <- lm(Stress.Level ~ log(Quality.of.Sleep), train)
+> M3 <- lm(Stress.Level ~ Quality.of.Sleep, val)
+> M4 <- lm(Stress.Level ~ log(Quality.of.Sleep), val)
+> # Quasipoisson Models
+> M1_qpois <- glm(Stress.Level ~ Quality.of.Sleep, data = train, family = quasipoisson())
+> M2_qpois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = train, family = quasipoisson())
+> M3_qpois <- glm(Stress.Level ~ Quality.of.Sleep, data = val, family = quasipoisson())
+> M4_qpois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = val, family = quasipoisson())
+> # Linear Models (R-squared from summary)
+> rsq_M1 <- summary(M1)$r.squared
+> rsq_M2 <- summary(M2)$r.squared
+> rsq_M3 <- summary(M3)$r.squared
+> rsq_M4 <- summary(M4)$r.squared
+> # Fit Poisson models
+> M1_pois <- glm(Stress.Level ~ Quality.of.Sleep, data = train, family = poisson())
+> M2_pois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = train, family = poisson())
+> M3_pois <- glm(Stress.Level ~ Quality.of.Sleep, data = val, family = poisson())
+> M4_pois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = val, family = poisson())
+> # McFadden's pseudo R² from Poisson models
+> pseudo_M1 <- 1 - logLik(M1_pois) / logLik(update(M1_pois, . ~ 1))
+> pseudo_M2 <- 1 - logLik(M2_pois) / logLik(update(M2_pois, . ~ 1))
+> pseudo_M3 <- 1 - logLik(M3_pois) / logLik(update(M3_pois, . ~ 1))
+> pseudo_M4 <- 1 - logLik(M4_pois) / logLik(update(M4_pois, . ~ 1))
+> # Linear model R² from summary
+> rsq_M1 <- summary(M1)$r.squared
+> rsq_M2 <- summary(M2)$r.squared
+> rsq_M3 <- summary(M3)$r.squared
+> rsq_M4 <- summary(M4)$r.squared
+> # Build results table
+> rsq_table <- data.frame(
++   Model = c("Linear (Train)", "Log-Linear (Train)", "Linear (Val)", "Log-Linear (Val)",
++             "Poisson Linear (Train)", "Poisson Log (Train)", "Poisson Linear (Val)", "Poisson Log (Val)"),
++   R_Squared = round(c(rsq_M1, rsq_M2, rsq_M3, rsq_M4,
++                       as.numeric(pseudo_M1),
++                       as.numeric(pseudo_M2),
++                       as.numeric(pseudo_M3),
++                       as.numeric(pseudo_M4)), 4)
++ )
+> print(rsq_table)
+                   Model R_Squared
+1         Linear (Train)    0.8226
+2     Log-Linear (Train)    0.7880
+3           Linear (Val)    0.7837
+4       Log-Linear (Val)    0.7489
+5 Poisson Linear (Train)    0.1156
+6    Poisson Log (Train)    0.1065
+7   Poisson Linear (Val)    0.1102
+8      Poisson Log (Val)    0.0997
+> # Create combined summary table with R-squared and RMSE
+> model_summary <- data.frame(
++   Model = c("Linear", "Log-Linear", "Poisson Linear", "Poisson Log"),
++   
++   Train_R_Squared = round(c(rsq_M1, rsq_M2, as.numeric(pseudo_M1), as.numeric(pseudo_M2)), 4),
++   Val_R_Squared   = round(c(rsq_M3, rsq_M4, as.numeric(pseudo_M3), as.numeric(pseudo_M4)), 4),
++   
++   Train_RMSE      = round(c(rmse_M1, rmse_M2, rmse_M1_qpois, rmse_M2_qpois), 4),
++   Val_RMSE        = round(c(rmse_M3, rmse_M4, rmse_M3_qpois, rmse_M4_qpois), 4)
++ )
+> # View the summary table
+> print(model_summary)
+           Model Train_R_Squared Val_R_Squared Train_RMSE Val_RMSE
+1         Linear          0.8226        0.7837     0.7488   0.8208
+2     Log-Linear          0.7880        0.7489     0.8187   0.8845
+3 Poisson Linear          0.1156        0.1102     0.3492   0.3809
+4    Poisson Log          0.1065        0.0997     0.3989   0.4337
+> # Overlay fits
+> ggplot(train, aes(x = Quality.of.Sleep, y = Stress.Level)) +
++   geom_point(color = "black") +
++   stat_smooth(method = "lm", se = FALSE, aes(color = "Linear")) +
++   stat_smooth(method = "lm", formula = y ~ log(x), se = FALSE, aes(color = "Log")) +
++   geom_line(aes(y = predict(M1_qpois, type = "response"), color = "Poisson Linear")) +
++   geom_line(aes(y = predict(M2_qpois, type = "response"), color = "Poisson Log")) +
++   labs(title = "Model Fits on Training Set", x = "Quality of Sleep", y = "Stress Level") +
++   scale_color_manual(values = c("Linear" = "blue", "Log" = "green", "Poisson Linear" = "purple", "Poisson Log" = "orange")) +
++   theme_minimal()
+`geom_smooth()` using formula = 'y ~ x'
+> # ---- MODEL DEFINITIONS ----
+> # Multivariate Linear Model
+> model_lm <- lm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train)
+> model_nl <- lm(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = train)
+> summary(model_lm)
+
+Call:
+lm(formula = Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + 
+    BMI.Category, data = train)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-2.05740 -0.41786 -0.03875  0.45846  2.43439 
+
+Coefficients:
+                               Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                    17.53626    0.54539  32.154  < 2e-16 ***
+Sleep.Duration                 -1.79182    0.08297 -21.596  < 2e-16 ***
+Age                            -0.01290    0.01303  -0.990 0.322935    
+GenderMale                      0.33292    0.20371   1.634 0.103496    
+OccupationDoctor                1.72214    0.23446   7.345 3.07e-12 ***
+OccupationEngineer              1.03972    0.23198   4.482 1.14e-05 ***
+OccupationLawyer                0.99835    0.25816   3.867 0.000141 ***
+OccupationNurse                 0.87148    0.24112   3.614 0.000366 ***
+OccupationSales Representative  1.55209    0.77165   2.011 0.045383 *  
+OccupationSalesperson           0.76847    0.30464   2.523 0.012289 *  
+OccupationScientist             0.22475    0.43149   0.521 0.602923    
+OccupationSoftware Engineer     0.26962    0.55155   0.489 0.625387    
+OccupationTeacher              -0.66651    0.25259  -2.639 0.008858 ** 
+BMI.CategoryNormal Weight       0.43352    0.20733   2.091 0.037567 *  
+BMI.CategoryObese              -0.48828    0.30802  -1.585 0.114210    
+BMI.CategoryOverweight          0.42212    0.24305   1.737 0.083700 .  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.6722 on 244 degrees of freedom
+Multiple R-squared:  0.8658,	Adjusted R-squared:  0.8576 
+F-statistic:   105 on 15 and 244 DF,  p-value: < 2.2e-16
+
+> summary(model_nl)
+
+Call:
+lm(formula = Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 
+    1) + Gender + Occupation + BMI.Category, data = train)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-1.99083 -0.48235 -0.02621  0.53754  2.50348 
+
+Coefficients:
+                               Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                      7.5372     2.2189   3.397 0.000796 ***
+poly(Sleep.Duration, 2)1       -22.2743     1.1450 -19.454  < 2e-16 ***
+poly(Sleep.Duration, 2)2         3.0333     1.3829   2.193 0.029222 *  
+log(Age + 1)                    -0.8474     0.5960  -1.422 0.156355    
+GenderMale                       0.6188     0.2251   2.749 0.006431 ** 
+OccupationDoctor                 1.1580     0.3319   3.489 0.000575 ***
+OccupationEngineer               0.6026     0.2869   2.100 0.036725 *  
+OccupationLawyer                 0.7103     0.2785   2.551 0.011367 *  
+OccupationNurse                  0.6065     0.2573   2.357 0.019200 *  
+OccupationSales Representative   0.6289     0.8749   0.719 0.472942    
+OccupationSalesperson            0.3987     0.3365   1.185 0.237230    
+OccupationScientist             -0.1946     0.4832  -0.403 0.687511    
+OccupationSoftware Engineer     -0.5504     0.6713  -0.820 0.413094    
+OccupationTeacher               -0.7122     0.2523  -2.822 0.005161 ** 
+BMI.CategoryNormal Weight        0.5360     0.2100   2.552 0.011329 *  
+BMI.CategoryObese               -0.3719     0.3155  -1.179 0.239679    
+BMI.CategoryOverweight           0.4577     0.2435   1.880 0.061342 .  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.6679 on 243 degrees of freedom
+Multiple R-squared:  0.8681,	Adjusted R-squared:  0.8594 
+F-statistic: 99.94 on 16 and 243 DF,  p-value: < 2.2e-16
+
+> # Elastic Net
+> combined <- rbind(train, val, test)
+> X_all <- model.matrix(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = combined)[, -1]
+> y_all <- combined$Stress.Level
+> X_trainval <- X_all[1:(nrow(train) + nrow(val)), ]
+> y_trainval <- y_all[1:(nrow(train) + nrow(val))]
+> X_test <- X_all[(nrow(train) + nrow(val) + 1):nrow(combined), ]
+> y_test <- test$Stress.Level
+> cv_model <- cv.glmnet(X_trainval, y_trainval, alpha = 0.5)
+> best_lambda_enet <- cv_model$lambda.min
+> # Load required package
+> library(glmnet)
+> # Display summary of coefficients at best lambda
+> enet_coef <- coef(cv_model, s = best_lambda_enet)
+> # Convert to readable table
+> enet_summary <- as.data.frame(as.matrix(enet_coef))
+> names(enet_summary) <- "Coefficient"
+> enet_summary <- enet_summary[enet_summary$Coefficient != 0, , drop = FALSE]  # Remove zero coefficients
+> # Print the summary table
+> print(round(enet_summary, 4))
+                               Coefficient
+(Intercept)                         4.7601
+poly(Sleep.Duration, 2)1          -26.2315
+poly(Sleep.Duration, 2)2            3.2814
+GenderMale                          0.8806
+OccupationDoctor                    0.7752
+OccupationLawyer                    0.0637
+OccupationNurse                     0.3376
+OccupationSales Representative      0.1808
+OccupationSoftware Engineer        -0.2395
+OccupationTeacher                  -0.9238
+BMI.CategoryNormal Weight           0.3195
+BMI.CategoryObese                  -0.4509
+BMI.CategoryOverweight              0.1389
+> # SVM
+> library(e1071)
+> svm_model <- svm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train,
++                  kernel = "radial", cost = 1, epsilon = 0.1)
+> summary(svm_model)
+
+Call:
+svm(formula = Stress.Level ~ Sleep.Duration + Age + Gender + 
+    Occupation + BMI.Category, data = train, kernel = "radial", 
+    cost = 1, epsilon = 0.1)
+
+
+Parameters:
+   SVM-Type:  eps-regression 
+ SVM-Kernel:  radial 
+       cost:  1 
+      gamma:  0.05882353 
+    epsilon:  0.1 
+
+
+Number of Support Vectors:  128
+
+
+
+
+
+> # Tuned SVM
+> library(tidymodels)
+> tune_result <- tune(
++   svm,
++   Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
++   data = train,
++   ranges = list(cost = c(0.1, 1, 10, 100), gamma = c(0.01, 0.1, 1), epsilon = c(0.01, 0.1, 0.5))
++ )
+> best_svm <- tune_result$best.model
+> summary(best_svm)
+
+Call:
+best.tune(METHOD = svm, train.x = Stress.Level ~ Sleep.Duration + 
+    Age + Gender + Occupation + BMI.Category, data = train, 
+    ranges = list(cost = c(0.1, 1, 10, 100), gamma = c(0.01, 
+        0.1, 1), epsilon = c(0.01, 0.1, 0.5)))
+
+
+Parameters:
+   SVM-Type:  eps-regression 
+ SVM-Kernel:  radial 
+       cost:  100 
+      gamma:  1 
+    epsilon:  0.01 
+
+
+Number of Support Vectors:  97
+
+
+
+
+
+> # Regression Tree
+> reg_spec <- decision_tree(min_n = 20, tree_depth = 30, cost_complexity = 0.01) %>%
++   set_engine("rpart") %>% set_mode("regression")
+> reg_tree <- reg_spec %>% fit(Stress.Level ~ ., data = train)
+> # Random Forest
+> rf_spec <- rand_forest(mode = "regression", mtry = 3, trees = 500, min_n = 5) %>%
++   set_engine("ranger")
+> rf_model <- rf_spec %>% fit(Stress.Level ~ ., data = train)
+> # Tuned Random Forest
+> rf_tune_spec <- rand_forest(mode = "regression", mtry = tune(), min_n = tune(), trees = 500) %>%
++   set_engine("ranger")
+> rf_wf <- workflow() %>% add_model(rf_tune_spec) %>% add_formula(Stress.Level ~ .)
+> cv_folds <- vfold_cv(train, v = 5)
+> rf_grid <- grid_random(mtry(range = c(1, ncol(train) - 1)), min_n(range = c(2, 20)), size = 20)
+> tuned_results <- tune_grid(rf_wf, resamples = cv_folds, grid = rf_grid, metrics = metric_set(rmse))
+Error in `metric_set()`:
+✖ The combination of metric functions must be:
+• only numeric metrics.
+• a mix of class metrics and class probability metrics.
+• a mix of dynamic and static survival metrics.
+ℹ The following metric function types are being mixed:
+- other (rmse <namespace:Metrics>)
+Run `rlang::last_trace()` to see where the error occurred.
+> best_params <- select_best(tuned_results, metric = "rmse")
+> final_rf <- finalize_workflow(rf_wf, best_params)
+> final_model <- fit(final_rf, data = train)
+> # ---- PREDICTIONS & METRICS ----
+> predict_metrics <- function(model, train_data, val_data, truth) {
++   pred_train <- predict(model, newdata = train_data)
++   pred_val <- predict(model, newdata = val_data)
++   rmse_train <- sqrt(mean((train_data[[truth]] - pred_train)^2))
++   rmse_val <- sqrt(mean((val_data[[truth]] - pred_val)^2))
++   rsq_train <- cor(train_data[[truth]], pred_train)^2
++   rsq_val <- cor(val_data[[truth]], pred_val)^2
++   return(list(rmse_train = rmse_train, rmse_val = rmse_val, rsq_train = rsq_train, rsq_val = rsq_val))
++ }
+> # Gather metrics for each model
+> lm_metrics <- predict_metrics(model_lm, train, val, "Stress.Level")
+> nl_metrics <- predict_metrics(model_nl, train, val, "Stress.Level")
+> svm_metrics <- predict_metrics(svm_model, train, val, "Stress.Level")
+> tuned_svm_metrics <- predict_metrics(best_svm, train, val, "Stress.Level")
+> tree_metrics <- predict_metrics(reg_tree, train, val, "Stress.Level")
+Error in `predict()`:
+! Please use `new_data` instead of `newdata`.
+Run `rlang::last_trace()` to see where the error occurred.
+> rf_metrics <- predict_metrics(rf_model, train, val, "Stress.Level")
+Error in `predict()`:
+! Please use `new_data` instead of `newdata`.
+Run `rlang::last_trace()` to see where the error occurred.
+> final_rf_metrics <- predict_metrics(final_model, train, val, "Stress.Level")
+Error in predict.workflow(model, newdata = train_data) : 
+  argument "new_data" is missing, with no default
+> # Elastic net custom metrics
+> pred_enet_train <- predict(cv_model, s = best_lambda_enet, newx = X_trainval)
+> pred_enet_val <- predict(cv_model, s = best_lambda_enet, newx = model.matrix(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = val)[, -1])
+> in_rmse_enet <- sqrt(mean((y_trainval - pred_enet_train)^2))
+> val_rmse_enet <- sqrt(mean((val$Stress.Level - pred_enet_val)^2))
+> rsq_train_enet <- cor(y_trainval, as.numeric(pred_enet_train))^2
+> rsq_val_enet <- cor(val$Stress.Level, as.numeric(pred_enet_val))^2
+> # ---- BUILD FINAL TABLE ----
+> final_perf_table <- tibble(
++   Model = c("Multivariate Linear", "Multivariate Nonlinear", "Elastic Net", "SVM", "Tuned SVM", "Regression Tree", "Tuned Random Forest"),
++   Train_RMSE = round(c(lm_metrics$rmse_train, nl_metrics$rmse_train, in_rmse_enet, svm_metrics$rmse_train, tuned_svm_metrics$rmse_train, tree_metrics$rmse_train, final_rf_metrics$rmse_train), 4),
++   Val_RMSE = round(c(lm_metrics$rmse_val, nl_metrics$rmse_val, val_rmse_enet, svm_metrics$rmse_val, tuned_svm_metrics$rmse_val, tree_metrics$rmse_val, final_rf_metrics$rmse_val), 4),
++   Train_R_Squared = round(c(lm_metrics$rsq_train, nl_metrics$rsq_train, rsq_train_enet, svm_metrics$rsq_train, tuned_svm_metrics$rsq_train, tree_metrics$rsq_train, final_rf_metrics$rsq_train), 4),
++   Val_R_Squared = round(c(lm_metrics$rsq_val, nl_metrics$rsq_val, rsq_val_enet, svm_metrics$rsq_val, tuned_svm_metrics$rsq_val, tree_metrics$rsq_val, final_rf_metrics$rsq_val), 4)
++ )
+Error: object 'tree_metrics' not found
+> # Print final comparison
+> print(final_perf_table)
+# A tibble: 7 × 5
+  Model                 Train_RMSE Val_RMSE Train_R_Squared Val_R_Squared
+  <chr>                      <dbl>    <dbl>           <dbl>         <dbl>
+1 Multivariate Linear       0.651     0.766           0.866         0.819
+2 Multivariate Nonline…     0.646     0.784           0.868         0.813
+3 Elastic Net               0.677     0.652           0.856         0.706
+4 SVM                       0.555     0.587           0.903         0.894
+5 Tuned SVM                 0.0895    0.216           0.998         0.986
+6 Regression Tree           0.147     0.196           0.993         0.988
+7 Tuned Random Forest       0.128     0.215           0.995         0.986
+> # Predict on test set using the final tuned random forest model
+> test_preds_rf <- predict(final_model, new_data = test) %>%
++   bind_cols(data.frame(Stress.Level = test$Stress.Level))
+> # Calculate RMSE on test set
+> test_rmse_rf <- test_preds_rf %>%
++   metrics(truth = Stress.Level, estimate = .pred) %>%
++   filter(.metric == "rmse") %>%
++   pull(.estimate)
+> # Calculate R-squared on test set
+> test_rsq_rf <- cor(test_preds_rf$Stress.Level, test_preds_rf$.pred)^2
+> # Display results
+> cat("\n✅ Final model tested on unseen data (Test Set)\n")
+
+✅ Final model tested on unseen data (Test Set)
+> cat("📉 Test RMSE:", round(test_rmse_rf, 4), "\n")
+📉 Test RMSE: 0.1943 
+> cat("📈 Test R-squared:", round(test_rsq_rf, 4), "\n")
+📈 Test R-squared: 0.9881 
+> # Optional: Create a tidy summary table
+> final_test_summary <- tibble(
++   Model = "Tuned Random Forest",
++   Test_RMSE = round(test_rmse_rf, 4),
++   Test_R_Squared = round(test_rsq_rf, 4)
++ )
+> print(final_test_summary)
+# A tibble: 1 × 3
+  Model               Test_RMSE Test_R_Squared
+  <chr>                   <dbl>          <dbl>
+1 Tuned Random Forest     0.194          0.988
+> # Load libraries
+> library(randomForest)
+> library(partykit)
+> # Fit the random forest model (this is for visualization only, not the tuned model)
+> rf_fit_plot <- randomForest(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
++                             data = train, ntree = 500)
+> # Extract a single tree (e.g., the first one) from the forest
+> single_tree <- getTree(rf_fit_plot, k = 1, labelVar = TRUE)
+> # Convert the tree to a 'party' object for visualization
+> # You need to refit a single tree as a model object for plotting:
+> # Create a training subset based on splits in the extracted tree
+> tree_model <- rpart::rpart(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train)
+> # Convert to party object
+> party_tree <- as.party(tree_model)
+> # Plot with whole number predictions
+> rpart.plot(tree_model,
++            type = 4,         # show predicted value at node
++            extra = 101,      # show % of observations + prediction
++            fallen.leaves = TRUE,
++            roundint = TRUE,  # round predictions to integers
++            main = "Stress Level Tree (Whole Number Predictions)")
