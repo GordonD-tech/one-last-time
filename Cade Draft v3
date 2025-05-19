@@ -1,0 +1,793 @@
+# Load libraries
+library(tidymodels)
+library(caret)
+library(MASS)
+library(lmridge)
+library(Metrics)
+library(tidyverse)
+library(tseries)
+library(ggthemes)
+library(ggplot2)
+library(glmnet)  # For Elastic Net
+library(baguette) #FOR BAGGED TREES
+library(ranger) #FOR RANDOM FORESTS
+library(randomForest) #ALT RANDOM FOREST PACKAGE
+library(xgboost) #FOR GRADIENT BOOSTING
+library(vip) #FOR VARIABLE IMPORTANCE
+
+# Load dataset
+df <- read.csv('https://raw.githubusercontent.com/GordonD-tech/one-last-time/refs/heads/main/Sleep_health_and_lifestyle_dataset.csv')
+
+# Check correlation
+cor_matrix <- cor(df[, sapply(df, is.numeric)], use = "complete.obs")
+print(cor_matrix["Stress.Level", ])
+
+# Load SVM library
+library(e1071)
+
+# Re-factor entire dataset first to capture all levels
+df$Gender <- as.factor(df$Gender)
+df$Occupation <- as.factor(df$Occupation)
+df$BMI.Category <- as.factor(df$BMI.Category)
+
+# Partition data
+set.seed(123)
+split1 <- initial_split(df, prop = 0.7, strata = Stress.Level)
+train <- training(split1)
+holdout <- testing(split1)
+split2 <- initial_split(holdout, prop = 0.5, strata = Stress.Level)
+val <- training(split2)
+test <- testing(split2)
+
+# Linear Models
+M1 <- lm(Stress.Level ~ Quality.of.Sleep, train)
+M2 <- lm(Stress.Level ~ log(Quality.of.Sleep), train)
+M3 <- lm(Stress.Level ~ Quality.of.Sleep, val)
+M4 <- lm(Stress.Level ~ log(Quality.of.Sleep), val)
+
+# Poisson Models (for both prediction and pseudo R²)
+M1_pois <- glm(Stress.Level ~ Quality.of.Sleep, data = train, family = poisson())
+M2_pois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = train, family = poisson())
+M3_pois <- glm(Stress.Level ~ Quality.of.Sleep, data = val, family = poisson())
+M4_pois <- glm(Stress.Level ~ log(Quality.of.Sleep), data = val, family = poisson())
+
+# R-squared for linear models
+rsq_M1 <- summary(M1)$r.squared
+rsq_M2 <- summary(M2)$r.squared
+rsq_M3 <- summary(M3)$r.squared
+rsq_M4 <- summary(M4)$r.squared
+
+# Pseudo R² for Poisson models
+pseudo_M1 <- 1 - logLik(M1_pois) / logLik(update(M1_pois, . ~ 1))
+pseudo_M2 <- 1 - logLik(M2_pois) / logLik(update(M2_pois, . ~ 1))
+pseudo_M3 <- 1 - logLik(M3_pois) / logLik(update(M3_pois, . ~ 1))
+pseudo_M4 <- 1 - logLik(M4_pois) / logLik(update(M4_pois, . ~ 1))
+
+# RMSEs
+rmse_M1 <- sqrt(mean((train$Stress.Level - predict(M1))^2))
+rmse_M2 <- sqrt(mean((train$Stress.Level - predict(M2))^2))
+rmse_M3 <- sqrt(mean((val$Stress.Level - predict(M3))^2))
+rmse_M4 <- sqrt(mean((val$Stress.Level - predict(M4))^2))
+
+rmse_M1_pois <- sqrt(mean((train$Stress.Level - predict(M1_pois, type = "response"))^2))
+rmse_M2_pois <- sqrt(mean((train$Stress.Level - predict(M2_pois, type = "response"))^2))
+rmse_M3_pois <- sqrt(mean((val$Stress.Level - predict(M3_pois, type = "response"))^2))
+rmse_M4_pois <- sqrt(mean((val$Stress.Level - predict(M4_pois, type = "response"))^2))
+
+# Build results table
+rsq_table <- data.frame(
+  Model = c("Linear (Train)", "Log-Linear (Train)", "Linear (Val)", "Log-Linear (Val)",
+            "Poisson Linear (Train)", "Poisson Log (Train)", "Poisson Linear (Val)", "Poisson Log (Val)"),
+  R_Squared = round(c(rsq_M1, rsq_M2, rsq_M3, rsq_M4,
+                      as.numeric(pseudo_M1),
+                      as.numeric(pseudo_M2),
+                      as.numeric(pseudo_M3),
+                      as.numeric(pseudo_M4)), 4)
+)
+
+print(rsq_table)
+
+# Combined summary with RMSE
+model_summary <- data.frame(
+  Model = c("Linear", "Log-Linear", "Poisson Linear", "Poisson Log"),
+  
+  Train_R_Squared = round(c(rsq_M1, rsq_M2, as.numeric(pseudo_M1), as.numeric(pseudo_M2)), 4),
+  Val_R_Squared   = round(c(rsq_M3, rsq_M4, as.numeric(pseudo_M3), as.numeric(pseudo_M4)), 4),
+  
+  Train_RMSE      = round(c(rmse_M1, rmse_M2, rmse_M1_pois, rmse_M2_pois), 4),
+  Val_RMSE        = round(c(rmse_M3, rmse_M4, rmse_M3_pois, rmse_M4_pois), 4)
+)
+
+print(model_summary)
+
+#plot
+ggplot(train, aes(x = Quality.of.Sleep, y = Stress.Level)) +
+  geom_point(color = "black") +
+  stat_smooth(method = "lm", se = FALSE, aes(color = "Linear")) +
+  stat_smooth(method = "lm", formula = y ~ log(x), se = FALSE, aes(color = "Log")) +
+  geom_line(aes(y = predict(M1_pois, type = "response"), color = "Poisson Linear")) +
+  geom_line(aes(y = predict(M2_pois, type = "response"), color = "Poisson Log")) +
+  labs(title = "Model Fits on Training Set", x = "Quality of Sleep", y = "Stress Level") +
+  scale_color_manual(values = c("Linear" = "blue", "Log" = "green", "Poisson Linear" = "purple", "Poisson Log" = "orange")) +
+  theme_minimal()
+
+# Multivariate Models #######################################
+
+# ---- MODEL DEFINITIONS ----
+# Multivariate Linear Model
+model_lm <- lm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train)
+model_nl <- lm(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = train)
+summary(model_lm)
+summary(model_nl)
+# Elastic Net
+combined <- rbind(train, val, test)
+X_all <- model.matrix(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = combined)[, -1]
+y_all <- combined$Stress.Level
+X_trainval <- X_all[1:(nrow(train) + nrow(val)), ]
+y_trainval <- y_all[1:(nrow(train) + nrow(val))]
+X_test <- X_all[(nrow(train) + nrow(val) + 1):nrow(combined), ]
+y_test <- test$Stress.Level
+cv_model <- cv.glmnet(X_trainval, y_trainval, alpha = 0.5)
+best_lambda_enet <- cv_model$lambda.min
+
+# Load required package
+library(glmnet)
+
+# Display summary of coefficients at best lambda
+enet_coef <- coef(cv_model, s = best_lambda_enet)
+
+# Convert to readable table
+enet_summary <- as.data.frame(as.matrix(enet_coef))
+names(enet_summary) <- "Coefficient"
+enet_summary <- enet_summary[enet_summary$Coefficient != 0, , drop = FALSE]  # Remove zero coefficients
+
+# Print the summary table
+print(round(enet_summary, 4))
+
+
+# SVM
+library(e1071)
+svm_model <- svm(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train,
+                 kernel = "radial", cost = 1, epsilon = 0.1)
+summary(svm_model)
+# Tuned SVM
+library(tidymodels)
+tune_result <- tune(
+  svm,
+  Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+  data = train,
+  ranges = list(cost = c(0.1, 1, 10, 100), gamma = c(0.01, 0.1, 1), epsilon = c(0.01, 0.1, 0.5))
+)
+best_svm <- tune_result$best.model
+summary(best_svm)
+# Regression Tree
+reg_spec <- decision_tree(min_n = 20, tree_depth = 30, cost_complexity = 0.01) %>%
+  set_engine("rpart") %>% set_mode("regression")
+reg_tree <- reg_spec %>% fit(Stress.Level ~ ., data = train)
+
+# Random Forest
+rf_spec <- rand_forest(mode = "regression", mtry = 3, trees = 500, min_n = 5) %>%
+  set_engine("ranger")
+rf_model <- rf_spec %>% fit(Stress.Level ~ ., data = train)
+
+# Tuned Random Forest
+rf_tune_spec <- rand_forest(mode = "regression", mtry = tune(), min_n = tune(), trees = 500) %>%
+  set_engine("ranger")
+rf_wf <- workflow() %>% add_model(rf_tune_spec) %>% add_formula(Stress.Level ~ .)
+cv_folds <- vfold_cv(train, v = 5)
+rf_grid <- grid_random(mtry(range = c(1, ncol(train) - 1)), min_n(range = c(2, 20)), size = 20)
+tuned_results <- tune_grid(rf_wf, resamples = cv_folds, grid = rf_grid, metrics = metric_set(rmse))
+best_params <- select_best(tuned_results, metric = "rmse")
+final_rf <- finalize_workflow(rf_wf, best_params)
+final_model <- fit(final_rf, data = train)
+
+# ---- PREDICTIONS & METRICS ----
+predict_metrics <- function(model, train_data, val_data, truth) {
+  pred_train <- predict(model, newdata = train_data)
+  pred_val <- predict(model, newdata = val_data)
+  rmse_train <- sqrt(mean((train_data[[truth]] - pred_train)^2))
+  rmse_val <- sqrt(mean((val_data[[truth]] - pred_val)^2))
+  rsq_train <- cor(train_data[[truth]], pred_train)^2
+  rsq_val <- cor(val_data[[truth]], pred_val)^2
+  return(list(rmse_train = rmse_train, rmse_val = rmse_val, rsq_train = rsq_train, rsq_val = rsq_val))
+}
+
+# Gather metrics for each model
+lm_metrics <- predict_metrics(model_lm, train, val, "Stress.Level")
+nl_metrics <- predict_metrics(model_nl, train, val, "Stress.Level")
+svm_metrics <- predict_metrics(svm_model, train, val, "Stress.Level")
+tuned_svm_metrics <- predict_metrics(best_svm, train, val, "Stress.Level")
+tree_metrics <- predict_metrics(reg_tree, train, val, "Stress.Level")
+rf_metrics <- predict_metrics(rf_model, train, val, "Stress.Level")
+final_rf_metrics <- predict_metrics(final_model, train, val, "Stress.Level")
+
+# Elastic net custom metrics
+pred_enet_train <- predict(cv_model, s = best_lambda_enet, newx = X_trainval)
+pred_enet_val <- predict(cv_model, s = best_lambda_enet, newx = model.matrix(Stress.Level ~ poly(Sleep.Duration, 2) + log(Age + 1) + Gender + Occupation + BMI.Category, data = val)[, -1])
+in_rmse_enet <- sqrt(mean((y_trainval - pred_enet_train)^2))
+val_rmse_enet <- sqrt(mean((val$Stress.Level - pred_enet_val)^2))
+rsq_train_enet <- cor(y_trainval, as.numeric(pred_enet_train))^2
+rsq_val_enet <- cor(val$Stress.Level, as.numeric(pred_enet_val))^2
+
+# ---- BUILD FINAL TABLE ----
+final_perf_table <- tibble(
+  Model = c("Multivariate Linear", "Multivariate Nonlinear", "Elastic Net", "SVM", "Tuned SVM", "Regression Tree", "Tuned Random Forest"),
+  Train_RMSE = round(c(lm_metrics$rmse_train, nl_metrics$rmse_train, in_rmse_enet, svm_metrics$rmse_train, tuned_svm_metrics$rmse_train, tree_metrics$rmse_train, final_rf_metrics$rmse_train), 4),
+  Val_RMSE = round(c(lm_metrics$rmse_val, nl_metrics$rmse_val, val_rmse_enet, svm_metrics$rmse_val, tuned_svm_metrics$rmse_val, tree_metrics$rmse_val, final_rf_metrics$rmse_val), 4),
+  Train Accuracy = round(c(lm_metrics$rsq_train, nl_metrics$rsq_train, rsq_train_enet, svm_metrics$rsq_train, tuned_svm_metrics$rsq_train, tree_metrics$rsq_train, final_rf_metrics$rsq_train), 4),
+  Val Accuracy = round(c(lm_metrics$rsq_val, nl_metrics$rsq_val, rsq_val_enet, svm_metrics$rsq_val, tuned_svm_metrics$rsq_val, tree_metrics$rsq_val, final_rf_metrics$rsq_val), 4)
+)
+
+# Print final comparison
+print(final_perf_table)
+
+# Predict on test set using the final tuned random forest model
+test_preds_rf <- predict(final_model, new_data = test) %>%
+  bind_cols(data.frame(Stress.Level = test$Stress.Level))
+
+# Calculate RMSE on test set
+test_rmse_rf <- test_preds_rf %>%
+  metrics(truth = Stress.Level, estimate = .pred) %>%
+  filter(.metric == "rmse") %>%
+  pull(.estimate)
+
+# Calculate R-squared on test set
+test_rsq_rf <- cor(test_preds_rf$Stress.Level, test_preds_rf$.pred)^2
+
+# Display results
+cat("\n✅ Final model tested on unseen data (Test Set)\n")
+cat("📉 Test RMSE:", round(test_rmse_rf, 4), "\n")
+cat("📈 Test R-squared:", round(test_rsq_rf, 4), "\n")
+
+# Optional: Create a tidy summary table
+final_test_summary <- tibble(
+  Model = "Tuned Random Forest",
+  Test_RMSE = round(test_rmse_rf, 4),
+  Test_R_Squared = round(test_rsq_rf, 4)
+)
+
+print(final_test_summary)
+
+# If not already installed
+# Install the necessary packages if not already installed
+# install.packages("randomForest")
+# install.packages("partykit")
+
+# Load libraries
+library(randomForest)
+library(partykit)
+
+# Fit the random forest model (this is for visualization only, not the tuned model)
+rf_fit_plot <- randomForest(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category,
+                            data = train, ntree = 500)
+
+# Extract a single tree (e.g., the first one) from the forest
+single_tree <- getTree(rf_fit_plot, k = 1, labelVar = TRUE)
+
+# Convert the tree to a 'party' object for visualization
+# You need to refit a single tree as a model object for plotting:
+# Create a training subset based on splits in the extracted tree
+tree_model <- rpart::rpart(Stress.Level ~ Sleep.Duration + Age + Gender + Occupation + BMI.Category, data = train)
+
+# Convert to party object
+party_tree <- as.party(tree_model)
+
+
+# Plot with whole number predictions
+rpart.plot(tree_model,
+           type = 4,         # show predicted value at node
+           extra = 101,      # show % of observations + prediction
+           fallen.leaves = TRUE,
+           roundint = TRUE,  # round predictions to integers
+           main = "Stress Level Tree (Whole Number Predictions)")
+
+# Task #6, Classification 
+# Changing stess level to catagorical variable (Stress.Category)
+library(dplyr)
+
+df <- df %>%
+  mutate(Stress.Category = case_when(
+    Stress.Level < 6  ~ "Low",
+    Stress.Level == 6 ~ "Average",
+    Stress.Level > 6  ~ "High"
+  ))
+
+df <- df %>%
+  mutate(Stress.Category = factor(Stress.Category, levels = c("Low", "Average", "High")))
+
+library(tidymodels)
+
+# Partition data using Stress.Category for stratified sampling
+set.seed(123)
+split1 <- initial_split(df, prop = 0.7, strata = Stress.Category)
+train <- training(split1)
+holdout <- testing(split1)
+
+split2 <- initial_split(holdout, prop = 0.5, strata = Stress.Category)
+val <- training(split2)
+test <- testing(split2)
+
+# Load MASS package for ordinal logistic regression
+library(MASS)
+
+# 1. Find the most common (majority) class in the training set
+majority_class <- names(sort(table(train$Stress.Category), decreasing = TRUE))[1]
+cat("Majority class is:", majority_class, "\n")
+
+# 2. Predict the majority class for every observation in the validation set
+baseline_preds <- factor(rep(majority_class, nrow(val)),
+                         levels = levels(val$Stress.Category))
+
+# 3. Calculate accuracy of baseline model
+baseline_accuracy <- mean(baseline_preds == val$Stress.Category)
+cat("Baseline model accuracy (always predicts", majority_class, "):", baseline_accuracy, "\n")
+
+# Probit model
+probit_model <- glm(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level, 
+                    data = train, 
+                    family = binomial(link = "probit"))
+
+# Fit ordinal logistic regression model with multiple numeric variables
+ord_logit_model_activity <- polr(
+  Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level + Sleep.Duration,
+  data = train,
+  Hess = TRUE
+)
+
+# View model summary
+summary(ord_logit_model_activity)
+summary(probit_model)
+
+# Predict on validation set
+val_preds_activity <- predict(ord_logit_model_activity, newdata = val)
+val_preds_activity_probit <- predict(probit_model, newdata = val)
+
+# Load necessary packages
+library(tidyverse)
+library(tidymodels)
+library(nnet)
+library(MASS)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(kernlab)
+library(randomForest)
+library(yardstick)
+library(themis)
+
+# Assume your dataframe is named `df`
+# Prepare data
+df <- df %>%
+  mutate(Stress.Category = factor(Stress.Category)) %>%
+  separate(Blood.Pressure, into = c("Systolic", "Diastolic"), sep = "/", convert = TRUE)
+
+set.seed(123)
+data_split <- initial_split(df, prop = 0.7, strata = Stress.Category)
+train <- training(data_split)
+test <- testing(data_split)
+
+val_split <- initial_split(train, prop = 0.8, strata = Stress.Category)
+train <- training(val_split)
+val <- testing(val_split)
+
+# Logistic Regression
+logit_model <- multinom(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+logit_preds_val <- predict(logit_model, newdata = val)
+acc_logit_val <- mean(logit_preds_val == val$Stress.Category)
+acc_logit_train <- mean(predict(logit_model, newdata = train) == train$Stress.Category)
+acc_logit_test <- mean(predict(logit_model, newdata = test) == test$Stress.Category)
+
+# Probit Model using polr (approximate)
+probit_model <- polr(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train, Hess = TRUE)
+probit_preds_val <- predict(probit_model, newdata = val)
+acc_probit_val <- mean(probit_preds_val == val$Stress.Category)
+acc_probit_train <- mean(predict(probit_model, newdata = train) == train$Stress.Category)
+acc_probit_test <- mean(predict(probit_model, newdata = test) == test$Stress.Category)
+
+# SVM (untuned)
+svm_model <- svm(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+svm_preds_val <- predict(svm_model, newdata = val)
+acc_svm_val <- mean(svm_preds_val == val$Stress.Category)
+acc_svm_train <- mean(predict(svm_model, newdata = train) == train$Stress.Category)
+acc_svm_test <- mean(predict(svm_model, newdata = test) == test$Stress.Category)
+
+# Tuned SVM
+# Load required packages
+library(tidymodels)
+library(kernlab)
+
+# Define the model with tuning parameters
+svm_spec <- svm_rbf(
+  mode = "classification",
+  cost = tune(),
+  rbf_sigma = tune()
+) %>%
+  set_engine("kernlab")
+
+# Extract the parameters using the new method
+svm_params <- extract_parameter_set_dials(svm_spec)
+
+# Create a regular grid with 3 levels
+svm_grid <- grid_regular(svm_params, levels = 3)
+
+# Optional: print to verify
+print(svm_grid)
+
+svm_recipe <- recipe(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+svm_wf <- workflow() %>% add_model(svm_spec %>% set_args(Cost = tune(), rbf_sigma = tune())) %>% add_recipe(svm_recipe)
+
+svm_folds <- vfold_cv(train, v = 5)
+# Define SVM model with correctly tuned parameters
+svm_spec <- svm_rbf(
+  mode = "classification",
+  cost = tune(),          # must be lowercase 'cost'
+  rbf_sigma = tune()
+) %>%
+  set_engine("kernlab")
+
+# Workflow
+svm_wf <- workflow() %>%
+  add_model(svm_spec) %>%
+  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration)
+
+# Resamples (assuming you already created svm_folds)
+# svm_folds <- vfold_cv(train, v = 5)
+
+# Extract tuning parameters properly
+svm_params <- extract_parameter_set_dials(svm_spec)
+
+# Build grid
+svm_grid <- grid_regular(svm_params, levels = 3)
+
+svm_res <- tune_grid(
+  svm_wf,
+  resamples = svm_folds,
+  grid = svm_grid,
+  metrics = metric_set(accuracy)
+)
+best_svm <- select_best(svm_res, metric = "accuracy")
+svm_tuned <- finalize_workflow(svm_wf, best_svm)
+svm_fit_tuned <- fit(svm_tuned, data = train)
+
+svm_preds_val_tuned <- predict(svm_fit_tuned, val) %>% bind_cols(val)
+acc_svm_tuned_val <- mean(svm_preds_val_tuned$.pred_class == val$Stress.Category)
+acc_svm_tuned_train <- mean(predict(svm_fit_tuned, train)$.pred_class == train$Stress.Category)
+acc_svm_tuned_test <- mean(predict(svm_fit_tuned, test)$.pred_class == test$Stress.Category)
+
+# Classification Tree
+tree_model <- rpart(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+tree_preds_val <- predict(tree_model, val, type = "class")
+acc_tree_val <- mean(tree_preds_val == val$Stress.Category)
+acc_tree_train <- mean(predict(tree_model, train, type = "class") == train$Stress.Category)
+acc_tree_test <- mean(predict(tree_model, test, type = "class") == test$Stress.Category)
+
+# Tuned Tree
+tree_spec <- decision_tree(cost_complexity = tune(), tree_depth = tune(), min_n = tune(), mode = "classification") %>%
+  set_engine("rpart")
+tree_recipe <- recipe(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+tree_wf <- workflow() %>% add_model(tree_spec) %>% add_recipe(tree_recipe)
+tree_grid <- grid_regular(parameters(tree_spec), levels = 3)
+tree_folds <- vfold_cv(train, v = 5)
+tree_tune_res <- tune_grid(tree_wf, resamples = tree_folds, grid = tree_grid, metrics = metric_set(accuracy))
+best_tree <- select_best(tree_tune_res, metric = "accuracy")
+tree_tuned <- finalize_workflow(tree_wf, best_tree)
+tree_fit_tuned <- fit(tree_tuned, data = train)
+
+acc_tree_tuned_val <- mean(predict(tree_fit_tuned, val)$.pred_class == val$Stress.Category)
+acc_tree_tuned_train <- mean(predict(tree_fit_tuned, train)$.pred_class == train$Stress.Category)
+acc_tree_tuned_test <- mean(predict(tree_fit_tuned, test)$.pred_class == test$Stress.Category)
+
+# Random Forest
+rf_model <- randomForest(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+acc_rf_val <- mean(predict(rf_model, val) == val$Stress.Category)
+acc_rf_train <- mean(predict(rf_model, train) == train$Stress.Category)
+acc_rf_test <- mean(predict(rf_model, test) == test$Stress.Category)
+
+# Tuned Random Forest (Optional)
+# Can be added similarly with `rand_forest()` and `tune_grid()` if needed
+
+# Combine results
+model_names <- c(
+  "Logistic Regression",
+  "Probit Model",
+  "SVM (Untuned)",
+  "SVM (Tuned)",
+  "Classification Tree",
+  "Tree (Tuned)",
+  "Random Forest (Untuned)"
+)
+
+in_sample <- c(
+  acc_logit_train,
+  acc_probit_train,
+  acc_svm_train,
+  acc_svm_tuned_train,
+  acc_tree_train,
+  acc_tree_tuned_train,
+  acc_rf_train
+)
+
+out_of_sample <- c(
+  acc_logit_val,
+  acc_probit_val,
+  acc_svm_val,
+  acc_svm_tuned_val,
+  acc_tree_val,
+  acc_tree_tuned_val,
+  acc_rf_val
+)
+
+test_performance <- c(
+  acc_logit_test,
+  acc_probit_test,
+  acc_svm_test,
+  acc_svm_tuned_test,
+  acc_tree_test,
+  acc_tree_tuned_test,
+  acc_rf_test
+)
+
+performance_summary <- data.frame(
+  Model = model_names,
+  Train_Accuracy = in_sample,
+  Validation_Accuracy = out_of_sample,
+  Test_Accuracy = test_performance
+)
+
+print(performance_summary)
+
+# Task #6, Classification 
+# Changing stess level to catagorical variable (Stress.Category)
+library(dplyr)
+
+df <- df %>%
+  mutate(Stress.Category = case_when(
+    Stress.Level < 6  ~ "Low",
+    Stress.Level == 6 ~ "Average",
+    Stress.Level > 6  ~ "High"
+  ))
+
+df <- df %>%
+  mutate(Stress.Category = factor(Stress.Category, levels = c("Low", "Average", "High")))
+
+library(tidymodels)
+
+# Partition data using Stress.Category for stratified sampling
+set.seed(123)
+split1 <- initial_split(df, prop = 0.7, strata = Stress.Category)
+train <- training(split1)
+holdout <- testing(split1)
+
+split2 <- initial_split(holdout, prop = 0.5, strata = Stress.Category)
+val <- training(split2)
+test <- testing(split2)
+
+# Load MASS package for ordinal logistic regression
+library(MASS)
+
+# 1. Find the most common (majority) class in the training set
+majority_class <- names(sort(table(train$Stress.Category), decreasing = TRUE))[1]
+cat("Majority class is:", majority_class, "\n")
+
+# 2. Predict the majority class for every observation in the validation set
+baseline_preds <- factor(rep(majority_class, nrow(val)),
+                         levels = levels(val$Stress.Category))
+
+# 3. Calculate accuracy of baseline model
+baseline_accuracy <- mean(baseline_preds == val$Stress.Category)
+cat("Baseline model accuracy (always predicts", majority_class, "):", baseline_accuracy, "\n")
+
+# Probit model
+probit_model <- glm(Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level, 
+                    data = train, 
+                    family = binomial(link = "probit"))
+
+# Fit ordinal logistic regression model with multiple numeric variables
+ord_logit_model_activity <- polr(
+  Stress.Category ~ Quality.of.Sleep + Age + Physical.Activity.Level + Sleep.Duration,
+  data = train,
+  Hess = TRUE
+)
+
+# View model summary
+summary(ord_logit_model_activity)
+summary(probit_model)
+
+# Predict on validation set
+val_preds_activity <- predict(ord_logit_model_activity, newdata = val)
+val_preds_activity_probit <- predict(probit_model, newdata = val)
+
+# Load necessary packages
+library(tidyverse)
+library(tidymodels)
+library(nnet)
+library(MASS)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(kernlab)
+library(randomForest)
+library(yardstick)
+library(themis)
+
+# Assume your dataframe is named `df`
+# Prepare data
+df <- df %>%
+  mutate(Stress.Category = factor(Stress.Category)) %>%
+  separate(Blood.Pressure, into = c("Systolic", "Diastolic"), sep = "/", convert = TRUE)
+
+set.seed(123)
+data_split <- initial_split(df, prop = 0.7, strata = Stress.Category)
+train <- training(data_split)
+test <- testing(data_split)
+
+val_split <- initial_split(train, prop = 0.8, strata = Stress.Category)
+train <- training(val_split)
+val <- testing(val_split)
+
+# Logistic Regression
+logit_model <- multinom(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+logit_preds_val <- predict(logit_model, newdata = val)
+acc_logit_val <- mean(logit_preds_val == val$Stress.Category)
+acc_logit_train <- mean(predict(logit_model, newdata = train) == train$Stress.Category)
+acc_logit_test <- mean(predict(logit_model, newdata = test) == test$Stress.Category)
+
+# Probit Model using polr (approximate)
+probit_model <- polr(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train, Hess = TRUE)
+probit_preds_val <- predict(probit_model, newdata = val)
+acc_probit_val <- mean(probit_preds_val == val$Stress.Category)
+acc_probit_train <- mean(predict(probit_model, newdata = train) == train$Stress.Category)
+acc_probit_test <- mean(predict(probit_model, newdata = test) == test$Stress.Category)
+
+# SVM (untuned)
+svm_model <- svm(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+svm_preds_val <- predict(svm_model, newdata = val)
+acc_svm_val <- mean(svm_preds_val == val$Stress.Category)
+acc_svm_train <- mean(predict(svm_model, newdata = train) == train$Stress.Category)
+acc_svm_test <- mean(predict(svm_model, newdata = test) == test$Stress.Category)
+
+# Tuned SVM
+# Load required packages
+library(tidymodels)
+library(kernlab)
+
+# Define the model with tuning parameters
+svm_spec <- svm_rbf(
+  mode = "classification",
+  cost = tune(),
+  rbf_sigma = tune()
+) %>%
+  set_engine("kernlab")
+
+# Extract the parameters using the new method
+svm_params <- extract_parameter_set_dials(svm_spec)
+
+# Create a regular grid with 3 levels
+svm_grid <- grid_regular(svm_params, levels = 3)
+
+# Optional: print to verify
+print(svm_grid)
+
+svm_recipe <- recipe(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+svm_wf <- workflow() %>% add_model(svm_spec %>% set_args(Cost = tune(), rbf_sigma = tune())) %>% add_recipe(svm_recipe)
+
+svm_folds <- vfold_cv(train, v = 5)
+# Define SVM model with correctly tuned parameters
+svm_spec <- svm_rbf(
+  mode = "classification",
+  cost = tune(),          # must be lowercase 'cost'
+  rbf_sigma = tune()
+) %>%
+  set_engine("kernlab")
+
+# Workflow
+svm_wf <- workflow() %>%
+  add_model(svm_spec) %>%
+  add_formula(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration)
+
+# Resamples (assuming you already created svm_folds)
+# svm_folds <- vfold_cv(train, v = 5)
+
+# Extract tuning parameters properly
+svm_params <- extract_parameter_set_dials(svm_spec)
+
+# Build grid
+svm_grid <- grid_regular(svm_params, levels = 3)
+
+svm_res <- tune_grid(
+  svm_wf,
+  resamples = svm_folds,
+  grid = svm_grid,
+  metrics = metric_set(accuracy)
+)
+best_svm <- select_best(svm_res, metric = "accuracy")
+svm_tuned <- finalize_workflow(svm_wf, best_svm)
+svm_fit_tuned <- fit(svm_tuned, data = train)
+
+svm_preds_val_tuned <- predict(svm_fit_tuned, val) %>% bind_cols(val)
+acc_svm_tuned_val <- mean(svm_preds_val_tuned$.pred_class == val$Stress.Category)
+acc_svm_tuned_train <- mean(predict(svm_fit_tuned, train)$.pred_class == train$Stress.Category)
+acc_svm_tuned_test <- mean(predict(svm_fit_tuned, test)$.pred_class == test$Stress.Category)
+
+# Classification Tree
+tree_model <- rpart(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+tree_preds_val <- predict(tree_model, val, type = "class")
+acc_tree_val <- mean(tree_preds_val == val$Stress.Category)
+acc_tree_train <- mean(predict(tree_model, train, type = "class") == train$Stress.Category)
+acc_tree_test <- mean(predict(tree_model, test, type = "class") == test$Stress.Category)
+
+# Tuned Tree
+tree_spec <- decision_tree(cost_complexity = tune(), tree_depth = tune(), min_n = tune(), mode = "classification") %>%
+  set_engine("rpart")
+tree_recipe <- recipe(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+tree_wf <- workflow() %>% add_model(tree_spec) %>% add_recipe(tree_recipe)
+tree_grid <- grid_regular(parameters(tree_spec), levels = 3)
+tree_folds <- vfold_cv(train, v = 5)
+tree_tune_res <- tune_grid(tree_wf, resamples = tree_folds, grid = tree_grid, metrics = metric_set(accuracy))
+best_tree <- select_best(tree_tune_res, metric = "accuracy")
+tree_tuned <- finalize_workflow(tree_wf, best_tree)
+tree_fit_tuned <- fit(tree_tuned, data = train)
+
+acc_tree_tuned_val <- mean(predict(tree_fit_tuned, val)$.pred_class == val$Stress.Category)
+acc_tree_tuned_train <- mean(predict(tree_fit_tuned, train)$.pred_class == train$Stress.Category)
+acc_tree_tuned_test <- mean(predict(tree_fit_tuned, test)$.pred_class == test$Stress.Category)
+
+# Random Forest
+rf_model <- randomForest(Stress.Category ~ Quality.of.Sleep + Age + Sleep.Duration, data = train)
+acc_rf_val <- mean(predict(rf_model, val) == val$Stress.Category)
+acc_rf_train <- mean(predict(rf_model, train) == train$Stress.Category)
+acc_rf_test <- mean(predict(rf_model, test) == test$Stress.Category)
+
+# Tuned Random Forest (Optional)
+# Can be added similarly with `rand_forest()` and `tune_grid()` if needed
+
+# Combine results
+model_names <- c(
+  "Logistic Regression",
+  "Probit Model",
+  "SVM (Untuned)",
+  "SVM (Tuned)",
+  "Classification Tree",
+  "Tree (Tuned)",
+  "Random Forest (Untuned)"
+)
+
+in_sample <- c(
+  acc_logit_train,
+  acc_probit_train,
+  acc_svm_train,
+  acc_svm_tuned_train,
+  acc_tree_train,
+  acc_tree_tuned_train,
+  acc_rf_train
+)
+
+out_of_sample <- c(
+  acc_logit_val,
+  acc_probit_val,
+  acc_svm_val,
+  acc_svm_tuned_val,
+  acc_tree_val,
+  acc_tree_tuned_val,
+  acc_rf_val
+)
+
+test_performance <- c(
+  acc_logit_test,
+  acc_probit_test,
+  acc_svm_test,
+  acc_svm_tuned_test,
+  acc_tree_test,
+  acc_tree_tuned_test,
+  acc_rf_test
+)
+
+performance_summary <- data.frame(
+  Model = model_names,
+  Train_Accuracy = in_sample,
+  Validation_Accuracy = out_of_sample,
+  Test_Accuracy = test_performance
+)
+
+print(performance_summary)
+
